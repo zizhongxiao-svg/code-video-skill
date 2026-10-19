@@ -7,6 +7,7 @@
 //              which is slower but never produces the black-block artifacts seen with GPU capture)
 //   W, H       viewport size (default 1920x1080)
 //   QUALITY    JPEG quality (default 93)
+//   READY_TIMEOUT  seconds to wait for window.__ready (default 1800)
 const { chromium } = require('playwright-core');
 const fs = require('fs'), path = require('path');
 
@@ -60,8 +61,11 @@ function parseFrames(s) {
     return route.fulfill({ status: 200, contentType: MIME[path.extname(p).toLowerCase()] || 'application/octet-stream', body: fs.readFileSync(p) });
   });
   const t0 = Date.now();
-  await page.goto('http://render.local/index.html');
-  await page.waitForFunction(() => window.__ready === true, null, { timeout: 300000, polling: 250 });
+  // Heavy WebGL scenes can spend minutes compiling shaders on SwiftShader before __ready, so the
+  // load wait is unbounded and only the __ready wait is capped (READY_TIMEOUT seconds).
+  await page.goto('http://render.local/index.html', { waitUntil: 'commit', timeout: 0 });
+  await page.waitForFunction(() => window.__ready === true, null,
+    { timeout: Number(process.env.READY_TIMEOUT || 1800) * 1000, polling: 250 });
   const info = await page.evaluate(() => window.__info);
   console.error('ready', ((Date.now() - t0) / 1000).toFixed(1) + 's', JSON.stringify(info));
   const quality = Number(process.env.QUALITY || 93);

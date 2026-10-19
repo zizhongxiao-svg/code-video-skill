@@ -49,6 +49,9 @@ document.fonts.ready.then(() => { window.__render(0); window.__ready = true; });
 - 默认用 SwiftShader（CPU）渲染 WebGL：慢一些，但稳定。`GPU_ANGLE=vulkan` 用显卡更快，
   但我们遇到过 GPU 连续截帧时画面出现大块黑斑的问题；用显卡时一定先抽几帧看看。
 - 景深、Bloom 等后期在 CPU 渲染下很慢，可以先用低分辨率抽帧调效果。
+  实测（32 核 + RTX 4090，12 秒 360 帧）：`examples/hanzi`（多点光源 + 阴影 + 景深 + Bloom）
+  CPU 约 13 分钟，其中大半是首帧编译着色器；`GPU_ANGLE=vulkan` 约 9 秒。`examples/ink` CPU 约 50 秒、GPU 约 7 秒。
+  Canvas 2D / SVG 页面不受影响，`examples/piying` 约 45 秒。
 
 ## 渲染与排错
 
