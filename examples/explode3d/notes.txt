@@ -1,0 +1,7 @@
+依据：特斯拉 2026-10-15 在得州 McGregor 的 SpaceX 试验场发布新一代 Roadster。画面只用下列公开信息，部件形状、尺寸和相对大小均为示意，未标任何尺寸。
+- 双座轿跑、蝴蝶门；后驱，后轴两台电机；Roadster 专用 4680 电芯；四个后置吸附风扇各 20 kW；可变攻角尾翼；Rocket 版两个碳纤维缠绕高压气罐共 600 升、约 250 公斤空气，取代副驾座椅；10 个冷气喷嘴分布在车身四周；风扇吸力最高约 2 g——Car and Driver, Sebastian Blanco, 2026-10-17, "Explained: Here's How the Tesla Roadster Flies, Flips, and Sucks", https://www.caranddriver.com/news/a74165059/tesla-roadster-thrusters-fan-system-explained/
+- 多模式风扇加地面密封系统从车底抽气，吸力足以让车倒挂、静止也行；Rocket 版单座、仅限邀请、不可上公共道路，冷气喷嘴分布在车身四周——tesla.com/roadster, https://www.tesla.com/roadster
+- 两个超高压气罐合计 600 升、约 250 公斤空气、10 个喷嘴，可在车上自行补气——The Verge, 2026-10, https://www.theverge.com/transportation/1012552/tesla-roadster-next-gen-reveal-elon-musk
+- 发布时间与地点——TechCrunch, 2026-10-15, "Tesla reveals SpaceX-powered Roadster that flies and falls with style", https://techcrunch.com/2026/10/15/tesla-reveals-spacex-powered-roadster-that-flies-and-falls-with-style/（正文未能抓取，只核对了标题和日期）
+- 部件布置佐证：约 200 升气罐在座椅后、约 400 升气罐占副驾位置；除后部推进喷嘴外另有 6 个（四角各 1 个、车头 2 个管偏航）；后部推进喷嘴合计超过 80 kN——WIRED, https://www.wired.com/story/how-tesla-made-its-new-230-mph-car-fly/ ；车尾 4 个喷嘴在后保险杠上方，四角喷嘴在车轮后方、朝下——MotorTrend, https://www.motortrend.com/news/tesla-roadster-thrust-system-spacex-technology-explained
+- 示意部分（来源没有给出）：电池包画在底板、风扇画在后轴前方并排、管路走向、喷嘴外形、车身线条和电芯排数。

@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>code-video template</title>
+<style>
+  html, body { margin: 0; width: 1920px; height: 1080px; overflow: hidden; background: #0d1b2a; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1920" height="1080"></canvas>
+<script>
+// ---- page contract (render.sh reads FPS / DUR with a regex: keep this exact form) ----
+const FPS = 30, DUR = 10;
+window.__info = { fps: FPS, duration: DUR, frames: Math.round(FPS * DUR) };
+
+const ctx = document.getElementById('c').getContext('2d');
+const W = 1920, H = 1080;
+const FONT = '"Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", sans-serif';
+
+// Seeded PRNG: never call Math.random(); every frame must be computable from t alone.
+function mulberry32(a) { return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+const ease = x => { x = clamp(x); return x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2; };
+// progress of t inside [a, b], eased
+const span = (t, a, b) => ease((t - a) / (b - a));
+
+const rnd = mulberry32(42);
+const STARS = Array.from({ length: 120 }, () => ({ x: rnd() * W, y: rnd() * H * 0.6, r: 1 + rnd() * 2, p: rnd() * 6.28 }));
+
+// Shots: [start, end, caption]
+const SHOTS = [
+  [0.0, 3.5, '第一句：抛出问题'],
+  [3.5, 7.0, '第二句：给出关键数字'],
+  [7.0, DUR, '第三句：一句话点破'],
+];
+
+window.__render = t => {
+  ctx.clearRect(0, 0, W, H);
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, '#0d1b2a'); g.addColorStop(1, '#1b3a5c');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  for (const s of STARS) {
+    ctx.globalAlpha = 0.4 + 0.4 * Math.sin(s.p + t * 2);
+    ctx.fillStyle = '#cfe8ff'; ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, 6.283); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  const shot = SHOTS.find(([a, b]) => t >= a && t < b) || SHOTS[SHOTS.length - 1];
+  const [a, b, text] = shot;
+  const k = span(t, a, a + 0.6) * (1 - span(t, b - 0.4, b));
+  ctx.save();
+  ctx.globalAlpha = k;
+  ctx.translate(0, (1 - k) * 40);
+  ctx.fillStyle = '#ffffff'; ctx.font = `700 96px ${FONT}`; ctx.textAlign = 'center';
+  ctx.fillText(text, W / 2, H / 2);
+  ctx.restore();
+
+  // footer
+  ctx.fillStyle = 'rgba(255,255,255,0.35)'; ctx.font = `400 22px ${FONT}`; ctx.textAlign = 'left';
+  ctx.fillText('模板 demo · 代码逐帧渲染', 48, H - 40);
+  return { seg: 'template', tau: t.toFixed(2) };
+};
+
+document.fonts.ready.then(() => { window.__render(0); window.__ready = true; });
+</script>
+</body>
+</html>

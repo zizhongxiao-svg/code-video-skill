@@ -1,0 +1,1 @@
+瑞利散射强度与波长的 4 次方成反比（I ∝ 1/λ⁴，见 Bohren & Huffman《Absorption and Scattering of Light by Small Particles》），按 450nm 与 700nm 计算 (700/450)⁴ ≈ 5.86；地平线方向的大气质量约为天顶的 38 倍（Kasten & Young 1989 大气质量公式在天顶角 90° 时的值）；画面中的分子、波形、地球与大气层比例都是示意。

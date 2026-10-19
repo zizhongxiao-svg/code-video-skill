@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin:0; width:1920px; height:1080px; overflow:hidden; background:#15181d;
+    font-family:"Noto Sans CJK SC",sans-serif; -webkit-font-smoothing:antialiased; }
+  #c { position:absolute; left:0; top:0; width:1920px; height:1080px; }
+  #ui { position:absolute; inset:0; color:#f2f4f7; }
+  #lines { position:absolute; left:0; top:0; }
+  .lab { position:absolute; white-space:nowrap; font-size:38px; font-weight:500; padding:4px 16px 6px; line-height:1.3;
+    background:rgba(18,21,26,.84); border:1.5px solid rgba(255,255,255,.28); border-radius:8px; transform:translate(-50%,-50%); }
+  .lab i { font-style:normal; color:#ffb547; }
+  .lab.gas i { color:#8fdcff; }
+  #title { position:absolute; left:96px; top:64px; font-size:54px; font-weight:700; letter-spacing:2px; }
+  #sub { position:absolute; left:96px; top:140px; font-size:36px; color:#a9b1bc; }
+  #cap { position:absolute; left:0; width:1920px; bottom:110px; text-align:center; }
+  #cap div { position:absolute; left:0; width:1920px; bottom:0; font-size:52px; font-weight:500; line-height:1.45; text-shadow:0 2px 12px rgba(0,0,0,.75); }
+  #cap .b { color:#8fdcff; }
+  #note { position:absolute; right:56px; bottom:22px; font-size:36px; color:#8b95a1; }
+  #foot { position:absolute; left:96px; bottom:30px; font-size:22px; color:#6b7280; }
+</style>
+<script type="importmap">{ "imports": { "three": "./vendor/three.module.js", "three/addons/": "./vendor/jsm/" } }</script>
+</head>
+<body>
+<canvas id="c" width="1920" height="1080"></canvas>
+<div id="ui">
+  <svg id="lines" width="1920" height="1080"></svg>
+  <div id="labs"></div>
+  <div id="title">新一代 Roadster（Rocket 版），拆开看看</div>
+  <div id="sub">单座 · 两个碳纤维气罐 · 10 个冷气喷嘴</div>
+  <div id="cap"><div id="c1">高压空气从气罐出发，<span class="b">流向 10 个喷嘴</span></div><div id="c2">靠约 250 公斤压缩空气，短暂飞起来</div></div>
+  <div id="note">示意图：部件位置按发布会公开信息绘制</div>
+  <div id="foot">3D 拆解（Three.js 爆炸图）demo · 代码逐帧渲染</div>
+</div>
+<script>
+const FPS = 30, DUR = 12;
+window.__info = { fps: FPS, duration: DUR, frames: Math.round(FPS * DUR) };
+</script>
+<script type="module" src="./scene.js"></script>
+</body>
+</html>

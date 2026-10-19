@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin:0; width:1920px; height:1080px; overflow:hidden; background:#16181d; }
+  svg { display:block; }
+  text { font-family:"Noto Sans CJK SC",sans-serif; fill:#e8eaed; }
+  .m { font-family:"DejaVu Serif","Times New Roman",serif; font-style:italic; }
+  .edge { stroke:#e8eaed; stroke-width:4; fill:none; stroke-linejoin:round; }
+  .tick { stroke:#c9ccd1; stroke-width:3; }
+  .tri { fill:#fc6255; fill-opacity:0; stroke:#fc6255; stroke-width:4; stroke-linejoin:round; }
+</style>
+</head>
+<body>
+<svg id="s" width="1920" height="1080" viewBox="0 0 1920 1080">
+  <text id="title" x="120" y="120" style="font-size:56px;font-weight:700">勾股定理：挪一挪三角形就看出来</text>
+  <text id="sub" x="120" y="178" style="font-size:34px;fill:#9aa0a6">直角边 a、b，斜边 c</text>
+
+  <g id="board">
+    <rect id="fillC" fill="#ffff00" fill-opacity="0"/>
+    <polygon id="cSq" fill="#ffff00" fill-opacity="0" stroke="#ffff00" stroke-width="4" stroke-linejoin="round"/>
+    <rect id="aSq" fill="#58c4dd" fill-opacity="0" stroke="#58c4dd" stroke-width="4"/>
+    <rect id="bSq" fill="#83c167" fill-opacity="0" stroke="#83c167" stroke-width="4"/>
+    <g id="tris"></g>
+    <path id="outline" class="edge"/>
+    <g id="ticks"></g>
+    <text id="cLab" class="m" style="font-size:96px;fill:#ffff00" text-anchor="middle">c²</text>
+    <text id="cEdge" class="m" style="font-size:52px;fill:#ffff00" text-anchor="middle">c</text>
+    <text id="aLab" class="m" style="font-size:72px;fill:#58c4dd" text-anchor="middle">a²</text>
+    <text id="bLab" class="m" style="font-size:96px;fill:#83c167" text-anchor="middle">b²</text>
+  </g>
+
+  <g id="panel">
+    <text id="l1a" x="1060" y="430" style="font-size:44px">大正方形 = 4 个三角形 +</text>
+    <text id="l1b" y="430" class="m" style="font-size:52px;fill:#ffff00">c²</text>
+    <text id="l2a" x="1060" y="520" style="font-size:44px">大正方形 = 4 个三角形 +</text>
+    <text id="l2b" y="520" style="font-size:52px"><tspan class="m" fill="#58c4dd">a²</tspan><tspan> + </tspan><tspan class="m" fill="#83c167" dx="4">b²</tspan></text>
+    <line id="st1" stroke="#9aa0a6" stroke-width="4" stroke-linecap="round"/>
+    <line id="st2" stroke="#9aa0a6" stroke-width="4" stroke-linecap="round"/>
+    <text id="cap1" x="1060" y="340" style="font-size:36px;fill:#9aa0a6">数一数面积</text>
+    <g id="eq" style="font-size:120px">
+      <text id="e0" class="m" fill="#58c4dd" style="fill:#58c4dd">a²</text>
+      <text id="e1" class="m">+</text>
+      <text id="e2" class="m" style="fill:#83c167">b²</text>
+      <text id="e3" class="m">=</text>
+      <text id="e4" class="m" style="fill:#ffff00">c²</text>
+    </g>
+    <rect id="box" fill="none" stroke="#ffff00" stroke-width="4" rx="6"/>
+    <text id="l4" x="1060" y="890" style="font-size:38px;fill:#c9ccd1">三角形只平移，空白的面积不会变</text>
+  </g>
+  <text x="120" y="1050" style="font-size:22px;fill:#6b7280">数学可视化（3Blue1Brown 式）demo · 代码逐帧渲染</text>
+</svg>
+<script>
+const FPS = 30, DUR = 12;
+const $ = id => document.getElementById(id);
+const NS = 'http://www.w3.org/2000/svg';
+const clamp = (x, a = 0, b = 1) => Math.max(a, Math.min(b, x));
+const ease = x => { x = clamp(x); return x < .5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2; };
+const prog = (t, a, b) => ease((t - a) / (b - a));
+const lin = (t, a, b) => clamp((t - a) / (b - a));
+const attr = (e, o) => { for (const k in o) e.setAttribute(k, o[k]); return e; };
+const op = (id, v) => $(id).setAttribute('opacity', v);
+
+// big square of side a+b, a:b = 3:4
+const X0 = 170, Y0 = 290, S = 680, A = S * 3 / 7, B = S - A;
+const P = (x, y) => [X0 + x, Y0 + y];
+attr($('outline'), { d: `M${X0} ${Y0} h${S} v${S} h${-S} Z` });
+const OL = 4 * S; $('outline').style.strokeDasharray = OL;
+
+// right-angle triangles (local coords), and pure translations to the second layout
+const TRI = [
+  { p: [[0, 0], [A, 0], [0, B]], d: [0, A], t0: 5.95 },   // top-left  -> left column, top
+  { p: [[S, 0], [S, A], [A, 0]], d: [0, 0], t0: 99 },     // top-right -> stays
+  { p: [[S, S], [B, S], [S, A]], d: [-B, 0], t0: 6.85 },  // bottom-right -> left column, bottom
+  { p: [[0, S], [0, B], [B, S]], d: [A, -B], t0: 5.05 },  // bottom-left -> top-right strip
+];
+TRI.forEach((tr, i) => {
+  const g = attr(document.createElementNS(NS, 'polygon'), { class: 'tri' });
+  $('tris').appendChild(g); tr.el = g;
+  const q = tr.p;
+  tr.len = q.reduce((s, v, k) => { const w = q[(k + 1) % 3]; return s + Math.hypot(w[0] - v[0], w[1] - v[1]); }, 0);
+  g.style.strokeDasharray = tr.len;
+  tr.in = 1.5 + i * 0.32;
+});
+attr($('cSq'), { points: [[A, 0], [S, A], [B, S], [0, B]].map(v => P(...v).join(',')).join(' ') });
+attr($('aSq'), { x: X0, y: Y0, width: A, height: A });
+attr($('bSq'), { x: X0 + A, y: Y0 + A, width: B, height: B });
+attr($('cLab'), { x: X0 + S / 2, y: Y0 + S / 2 + 34 });
+{ const [x, y] = P(A / 2 + 34, B / 2 + 34); attr($('cEdge'), { x, y }); }
+attr($('aLab'), { x: X0 + A / 2, y: Y0 + A / 2 + 26 });
+attr($('bLab'), { x: X0 + A + B / 2, y: Y0 + A + B / 2 + 34 });
+
+// edge labels: top edge (a | b) and right edge (a / b) hold for both layouts
+const tk = $('ticks'), tickEls = [];
+const addTick = (x1, y1, x2, y2) => { const l = attr(document.createElementNS(NS, 'line'), { x1, y1, x2, y2, class: 'tick' }); tk.appendChild(l); tickEls.push(l); };
+const addLab = (x, y, s, c) => { const e = attr(document.createElementNS(NS, 'text'), { x, y, class: 'm', 'text-anchor': 'middle' }); e.style.fontSize = '52px'; e.style.fill = c; e.textContent = s; tk.appendChild(e); tickEls.push(e); };
+addTick(X0, Y0 - 18, X0, Y0 - 44); addTick(X0 + A, Y0 - 18, X0 + A, Y0 - 44); addTick(X0 + S, Y0 - 18, X0 + S, Y0 - 44);
+addTick(X0 + S + 18, Y0, X0 + S + 44, Y0); addTick(X0 + S + 18, Y0 + A, X0 + S + 44, Y0 + A); addTick(X0 + S + 18, Y0 + S, X0 + S + 44, Y0 + S);
+addLab(X0 + A / 2, Y0 - 30, 'a', '#58c4dd'); addLab(X0 + A + B / 2, Y0 - 30, 'b', '#83c167');
+addLab(X0 + S + 64, Y0 + A / 2 + 18, 'a', '#58c4dd'); addLab(X0 + S + 64, Y0 + A + B / 2 + 18, 'b', '#83c167');
+
+let EQ = [];
+function layout() {
+  const w1 = $('l1a').getComputedTextLength();
+  $('l1b').setAttribute('x', 1060 + w1 + 14); $('l2b').setAttribute('x', 1060 + w1 + 14);
+  attr($('st1'), { x1: 1052, x2: 1060 + w1 + 6, y1: 415, y2: 415 });
+  attr($('st2'), { x1: 1052, x2: 1060 + w1 + 6, y1: 505, y2: 505 });
+  $('st1').dataset.x2 = $('st2').dataset.x2 = 1060 + w1 + 6;
+  const gap = 34, ws = [0, 1, 2, 3, 4].map(i => $('e' + i).getComputedTextLength());
+  let x = 1060;
+  EQ = ws.map((w, i) => { const e = { x, w }; x += w + gap; return e; });
+  EQ.forEach((e, i) => $('e' + i).setAttribute('x', e.x));
+  attr($('box'), { x: 1030, y: 630, width: x - gap - 1060 + 60, height: 160 });
+  $('box').dataset.len = 2 * (x - gap - 1060 + 60 + 160);
+}
+
+window.__info = { fps: FPS, duration: DUR, frames: Math.round(FPS * DUR) };
+window.__render = t => {
+  op('title', prog(t, 0.0, 0.6)); op('sub', prog(t, 0.3, 0.9));
+  $('outline').style.strokeDashoffset = OL * (1 - prog(t, 0.4, 1.5));
+  tickEls.forEach(e => e.setAttribute('opacity', prog(t, 1.2, 1.7)));
+
+  // triangles: draw border, then fill; later translate one by one
+  for (const tr of TRI) {
+    const k = prog(t, tr.in, tr.in + 0.6), f = prog(t, tr.in + 0.45, tr.in + 0.9);
+    const m = prog(t, tr.t0, tr.t0 + 0.85);
+    const lift = Math.sin(Math.PI * clamp((t - tr.t0) / 0.85)) * 0.25;
+    tr.el.setAttribute('points', tr.p.map(([x, y]) => P(x + tr.d[0] * m, y + tr.d[1] * m).join(',')).join(' '));
+    tr.el.style.strokeDashoffset = tr.len * (1 - k);
+    tr.el.style.fillOpacity = (0.32 + lift) * f;
+    tr.el.setAttribute('opacity', k > 0 ? 1 : 0);
+  }
+
+  // c² region: appears, then gives way when triangles start moving
+  const cIn = prog(t, 3.0, 3.6), cOut = prog(t, 4.75, 5.15);
+  $('cSq').style.fillOpacity = 0.22 * cIn * (1 - cOut);
+  $('cSq').setAttribute('stroke-opacity', cIn * (1 - cOut));
+  op('cLab', prog(t, 3.3, 3.8) * (1 - cOut)); op('cEdge', prog(t, 3.6, 4.0) * (1 - cOut));
+
+  // a² and b² revealed after rearranging
+  const aIn = prog(t, 7.75, 8.3), bIn = prog(t, 7.95, 8.5);
+  $('aSq').style.fillOpacity = 0.25 * aIn; $('aSq').setAttribute('stroke-opacity', aIn);
+  $('bSq').style.fillOpacity = 0.22 * bIn; $('bSq').setAttribute('stroke-opacity', bIn);
+  op('aLab', prog(t, 8.0, 8.4)); op('bLab', prog(t, 8.2, 8.6));
+
+  op('cap1', prog(t, 3.4, 3.9));
+  op('l1a', prog(t, 3.7, 4.2)); op('l1b', prog(t, 3.95, 4.4));
+  op('l2a', prog(t, 8.35, 8.8)); op('l2b', prog(t, 8.55, 8.95));
+  const s1 = prog(t, 9.0, 9.4);
+  for (const id of ['st1', 'st2']) { const e = $(id), x1 = +e.getAttribute('x1'), x2 = +e.dataset.x2; e.setAttribute('x2', x1 + (x2 - x1) * s1); op(id, s1 > 0 ? 1 : 0); }
+  const dim = 1 - 0.55 * prog(t, 9.15, 9.55);
+  op('l1a', prog(t, 3.7, 4.2) * dim); op('l2a', prog(t, 8.35, 8.8) * dim);
+
+  [9.45, 9.7, 9.9, 10.15, 10.35].forEach((t0, i) => {
+    const k = prog(t, t0, t0 + 0.35);
+    const e = $('e' + i); e.setAttribute('opacity', k); e.setAttribute('y', 740 + 26 * (1 - k));
+  });
+  const bx = prog(t, 10.7, 11.2), L = +$('box').dataset.len;
+  $('box').style.strokeDasharray = L; $('box').style.strokeDashoffset = L * (1 - bx); op('box', bx > 0 ? 1 : 0);
+  op('l4', prog(t, 10.9, 11.3));
+  return { seg: 'math', tau: t.toFixed(2) };
+};
+document.fonts.load('52px "DejaVu Serif"').then(() => document.fonts.ready).then(() => {
+  layout(); window.__render(0); window.__ready = true;
+});
+</script>
+</body>
+</html>

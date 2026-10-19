@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin:0; width:1920px; height:1080px; overflow:hidden; background:#ebe9e3; }
+  canvas { position:absolute; left:0; top:0; display:block; }
+</style>
+</head>
+<body>
+<canvas id="gl" width="1920" height="1080"></canvas>
+<canvas id="ov" width="1920" height="1080"></canvas>
+<script id="fs" type="x-shader/x-fragment">
+precision highp float;
+uniform vec2 uRes;
+uniform vec3 uCam;
+uniform float uR, uMorph, uGap, uSat, uT;
+uniform vec2 uZP, uZD;
+
+float hash12(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * .1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
+vec3 hash32(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * vec3(.1031, .1030, .0973)); p3 += dot(p3, p3.yxz + 33.33); return fract((p3.xxy + p3.yzz) * p3.zyx); }
+float vnoise(vec2 p) {
+  vec2 i = floor(p), f = fract(p); vec2 u = f * f * (3. - 2. * f);
+  return mix(mix(hash12(i), hash12(i + vec2(1, 0)), u.x), mix(hash12(i + vec2(0, 1)), hash12(i + vec2(1, 1)), u.x), u.y);
+}
+float fbm(vec2 p) { float s = 0., a = .5; for (int i = 0; i < 5; i++) { s += a * vnoise(p); p = mat2(1.6, 1.2, -1.2, 1.6) * p + 7.3; a *= .5; } return s; }
+
+// paper fibres: x = core (inside a fibre), y = capillary channel next to fibres
+vec3 fibres(vec2 p) {
+  const float CS = 46.;
+  vec2 c = floor(p / CS);
+  float core = 0., chan = 0.;
+  for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {
+    vec2 cc = c + vec2(float(i), float(j));
+    for (int k = 0; k < 2; k++) {
+      vec3 h = hash32(cc * 1.37 + float(k) * 17.13);
+      vec2 o = (cc + h.xy) * CS;
+      float a = h.z * 6.2832;
+      vec2 d = vec2(cos(a), sin(a));
+      float hl = CS * (0.55 + 0.35 * hash12(cc + float(k) * 5.1));
+      float w = 1.0 + 1.3 * hash12(cc * 2.3 + float(k));
+      vec2 q = p - o;
+      float tt = clamp(dot(q, d), -hl, hl);
+      float dist = length(q - d * tt);
+      float taper = 1.0 - smoothstep(hl * 0.6, hl, abs(tt));
+      float ww = w * (0.35 + 0.65 * taper);
+      core = max(core, 1.0 - smoothstep(ww * 0.55, ww, dist));
+      chan += exp(-pow((dist - ww * 1.7) / (ww * 0.8), 2.)) * taper;
+    }
+  }
+  // featured pair of fibres with a narrow slit between them
+  vec2 q = p - uZP; float al = dot(q, uZD), pe = dot(q, vec2(-uZD.y, uZD.x));
+  float inR = 1. - smoothstep(110., 150., abs(al - 20.));
+  float f1 = abs(pe - 3.1), f2 = abs(pe + 3.1);
+  float cf = max(1. - smoothstep(1.5, 2.3, f1), 1. - smoothstep(1.5, 2.3, f2)) * inR;
+  float gap = (1. - smoothstep(0.5, 0.95, abs(pe))) * inR;
+  core = max(core * (1. - gap), cf);
+  return vec3(core, clamp(chan, 0., 1.5), gap);
+}
+
+float blot(vec2 p, vec3 fb, float zv, out float halo) {
+  halo = 0.;
+  if (uR < 1.) return 0.;
+  float r = length(p); vec2 dir = p / max(r, 1e-3);
+  float dz = smoothstep(0.86, 0.985, dot(dir, uZD));
+  float n = (fbm(dir * 1.7 + 4.0) - .5) * 0.46 + (fbm(dir * 5.5 + 9.) - .5) * 0.2 + (fbm(dir * 17. + 2.) - .5) * 0.07;
+  float Rb = uR * (1. + n * (1. - dz * 0.92));
+  float grow = smoothstep(20., 120., uR);
+  float wick = grow * (fb.x * 16. + min(fb.y, 1.5) * 24.);
+  float Reff = Rb + wick + fb.z * uGap + (fbm(p * 0.07) - .5) * 14. * grow;
+  float edge = Reff - r;
+  float dens = smoothstep(-2.5, 4.5, edge);
+  float rr = clamp(r / max(Reff, 1.), 0., 1.);
+  float inner = mix(0.95, 0.5, pow(rr, 1.3)) - 0.12 * smoothstep(0.2, 0.7, fbm(p * 0.018 + 5.)) * rr;
+  float rim = 0.14 * exp(-pow(edge / 6., 2.));
+  inner = mix(inner, 0.9, zv * 0.75);
+  float ink = dens * clamp(inner + rim, 0., 1.);
+  float Rw = Rb * 1.09 + 10. * grow + wick * 1.15 + fb.z * uGap * 1.3 + (fbm(p * 0.05 + 8.) - .5) * 16. * grow;
+  float wet = smoothstep(-3., 5., Rw - r) * (1. - dens);
+  ink += wet * (0.2 + 0.12 * fbm(p * 0.09)) * grow;
+  ink *= 0.88 + 0.24 * fbm(p * 0.12 + 3.);
+  // ink inside fibres reads lighter than in the slits between them
+  ink *= mix(1.0, mix(1.0, 0.6, fb.x), zv);
+  halo = smoothstep(-2., 14., Rw * 1.06 + 12. - r) * (1. - wet) * (1. - dens) * 0.07 * grow;
+  // splash satellites
+  if (uSat > 0.) {
+    for (int i = 0; i < 4; i++) {
+      vec3 h = hash32(vec2(float(i) * 3.1, 7.7));
+      vec2 sp = (h.xy - .5) * 260.; float sr = (3. + 4. * h.z) * uSat;
+      float sd = length(p - sp) - sr * (1. + 0.3 * (fbm(p * 0.4) - .5));
+      ink = max(ink, 0.85 * smoothstep(1.5, -1.5, sd));
+    }
+  }
+  return ink;
+}
+
+float rn(vec2 p) { return 1. - abs(2. * fbm(p) - 1.); }
+float ridgeLayer(vec2 p, float top, float fall, float tone) {
+  float y = p.y - top;
+  if (y < -3.) return 0.;
+  float d = smoothstep(-2., 2.5, y) * exp(-max(y, 0.) / fall);
+  float streak = fbm(vec2(p.x * 0.02, p.y * 0.005) + tone * 9.);
+  float dry = smoothstep(0.3, 0.7, fbm(p * 0.045 + tone * 3.));
+  d *= 0.5 + 0.7 * streak;
+  d *= 1. - 0.45 * dry * smoothstep(6., 50., y);
+  d += (0.08 + 0.12 * streak) * exp(-max(y, 0.) / 6.) * smoothstep(-2., 1., y);
+  return clamp(d * tone, 0., 1.);
+}
+float mountains(vec2 p) {
+  float x = p.x;
+  float far = -20. - (110. * fbm(vec2(x * 0.0025, 1.3)) + 90. * rn(vec2(x * 0.006, 4.1)));
+  float mid = 170. - (250. * exp(-pow((x - 30.) / 270., 2.)) + 150. * rn(vec2(x * 0.0042, 5.)) + 55. * fbm(vec2(x * 0.016, 8.)));
+  float side = smoothstep(380., 1050., abs(x - 60.));
+  float nea = 790. - side * (300. * fbm(vec2(x * 0.0028, 11.)) + 90. * rn(vec2(x * 0.011, 2.)));
+  nea += 170. * smoothstep(-700., -1250., x);
+  float a = ridgeLayer(p, far, 110., 0.2);
+  float b = ridgeLayer(p, mid, 170., 0.6);
+  float c = ridgeLayer(p, nea, 120., 0.88);
+  float mist = exp(-pow((p.y - 230.) / 80., 2.)) * 0.8;
+  b *= 1. - mist; a *= 1. - mist * 0.6;
+  return 1. - (1. - a) * (1. - b) * (1. - c);
+}
+
+void main() {
+  vec2 fc = vec2(gl_FragCoord.x, uRes.y - gl_FragCoord.y);
+  vec2 p = uCam.xy + (fc - uRes * 0.5) / uCam.z;
+  float zv = smoothstep(2.2, 5.5, uCam.z);
+  vec3 fb = fibres(p);
+
+  vec3 paper = vec3(0.928, 0.926, 0.912);
+  paper -= fbm(p * 0.0035) * 0.05 + fbm(p * 0.03) * 0.02 + fbm(p * 0.25) * 0.012;
+  paper += (fb.x * 0.016 - fb.y * 0.006) * (1. - zv) * (0.4 + 0.6 * smoothstep(1., 3., uCam.z));
+  vec3 tube = mix(vec3(0.875, 0.87, 0.855), vec3(0.985, 0.982, 0.972), fb.x);
+  float rimL = smoothstep(0.05, 0.35, fb.x) * (1. - smoothstep(0.35, 0.8, fb.x));
+  tube -= rimL * 0.16;
+  tube -= (fbm(p * 1.2) - .5) * 0.04;
+  paper = mix(paper, tube, zv);
+
+  float halo;
+  float ink = blot(p, fb, zv, halo);
+  if (uMorph > 0.) {
+    float m = mountains(p);
+    float ml = smoothstep(0., 1., uMorph * 2.3 - 0.55 * length(p) / 760. - 0.6 * fbm(p * 0.006 + 2.));
+    float bf = smoothstep(0.2, 0.75, uMorph + 0.3 * (fbm(p * 0.01 + 4.) - .5));
+    ink = 1. - (1. - ink * (1. - bf)) * (1. - m * ml);
+    halo *= 1. - bf;
+  }
+  vec3 inkCol = vec3(0.055, 0.06, 0.07);
+  vec3 col = mix(paper * (1. - halo), inkCol, clamp(ink, 0., 1.));
+  vec2 uv = fc / uRes;
+  col *= 1. - 0.10 * pow(length(uv - .5) * 1.35, 2.2);
+  gl_FragColor = vec4(col, 1.);
+}
+</script>
+<script>
+const FPS = 30, DUR = 11.5;
+const clamp = (x, a = 0, b = 1) => Math.max(a, Math.min(b, x));
+const ease = x => { x = clamp(x); return x < .5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2; };
+const prog = (t, a, b) => ease((t - a) / (b - a));
+const lerp = (a, b, k) => a + (b - a) * k;
+function mulberry32(a) { return function () { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+
+const cvs = document.getElementById('gl');
+const gl = cvs.getContext('webgl', { preserveDrawingBuffer: true, antialias: false });
+function sh(type, src) { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; }
+const prg = gl.createProgram();
+gl.attachShader(prg, sh(gl.VERTEX_SHADER, 'attribute vec2 a; void main(){ gl_Position = vec4(a, 0., 1.); }'));
+gl.attachShader(prg, sh(gl.FRAGMENT_SHADER, document.getElementById('fs').textContent));
+gl.linkProgram(prg); gl.useProgram(prg);
+const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+const loc = gl.getAttribLocation(prg, 'a'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+const U = n => gl.getUniformLocation(prg, n);
+const u = { res: U('uRes'), cam: U('uCam'), R: U('uR'), morph: U('uMorph'), gap: U('uGap'), sat: U('uSat'), t: U('uT'), zp: U('uZP'), zd: U('uZD') };
+gl.viewport(0, 0, 1920, 1080);
+
+const ov = document.getElementById('ov'), ctx = ov.getContext('2d');
+const SERIF = '"Noto Serif CJK SC", serif';
+
+// ---------- timeline ----------
+const T_HIT = 1.0;
+const blotR = t => t < T_HIT ? 0 : 18 + 300 * Math.sqrt(clamp((t - T_HIT) / 6.4));
+const ZA = -0.38, ZD = [Math.cos(ZA), Math.sin(ZA)];
+const ZP = [ZD[0] * 296, ZD[1] * 296];
+const C0 = [0, 30, 1.0], C1z = 6.0, CF = [0, -70, 0.74];
+function camera(t) {
+  const z0 = lerp(1.0, 1.04, clamp(t / 4.2));
+  if (t < 4.2) return [C0[0], C0[1], z0];
+  const zoomFix = z => [ZP[0] + (C0[0] - ZP[0]) * (1.04 / z), ZP[1] + (C0[1] - ZP[1]) * (1.04 / z), z];
+  if (t < 5.3) { const k = ease((t - 4.2) / 1.1); return zoomFix(Math.exp(lerp(Math.log(1.04), Math.log(C1z), k))); }
+  const zh = lerp(C1z, C1z * 1.06, clamp((t - 5.3) / 2.0));
+  if (t < 7.3) return zoomFix(zh);
+  const A = zoomFix(C1z * 1.06);
+  const k = ease((t - 7.3) / 1.3);
+  if (k >= 1) { const d = lerp(1, 1.025, clamp((t - 8.6) / 2.9)); return [CF[0], CF[1], CF[2] * d]; }
+  const z = Math.exp(lerp(Math.log(A[2]), Math.log(CF[2]), k));
+  const w = (1 / z - 1 / A[2]) / (1 / CF[2] - 1 / A[2]);
+  return [lerp(A[0], CF[0], w), lerp(A[1], CF[1], w), z];
+}
+const toScreen = (cam, p) => [960 + (p[0] - cam[0]) * cam[2], 540 + (p[1] - cam[1]) * cam[2]];
+
+// ---------- seal (static, built once) ----------
+const seal = document.createElement('canvas'); seal.width = seal.height = 132;
+function buildSeal() {
+  const g = seal.getContext('2d'), r = mulberry32(31);
+  g.fillStyle = '#b3241b';
+  g.beginPath(); g.moveTo(8, 10); g.lineTo(122, 6); g.lineTo(126, 120); g.lineTo(10, 126); g.closePath(); g.fill();
+  g.fillStyle = '#f2ece4'; g.font = `900 52px ${SERIF}`; g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText('毛', 66, 40); g.fillText('细', 66, 96);
+  g.strokeStyle = '#f2ece4'; g.lineWidth = 3; g.strokeRect(16, 15, 101, 104);
+  g.globalCompositeOperation = 'destination-out';
+  for (let i = 0; i < 260; i++) { g.globalAlpha = 0.3 + r() * 0.7; g.beginPath(); g.arc(r() * 132, r() * 132, r() * 2.2, 0, 6.28); g.fill(); }
+  for (let i = 0; i < 40; i++) { const e = r() * 4 | 0, s = r() * 132; g.beginPath(); g.arc(e === 0 ? s : e === 1 ? s : e === 2 ? 6 + r() * 4 : 124 + r() * 4, e === 0 ? 6 + r() * 4 : e === 1 ? 124 + r() * 4 : s, 2 + r() * 4, 0, 6.28); g.fill(); }
+}
+
+function vtext(x, y, s, size, alpha, weight = 600) {
+  if (alpha <= 0) return;
+  ctx.save(); ctx.globalAlpha = alpha; ctx.font = `${weight} ${size}px ${SERIF}`; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+  [...s].forEach((ch, i) => {
+    const yy = y + i * size * 1.14;
+    ctx.lineWidth = 10; ctx.strokeStyle = 'rgba(236,234,228,0.85)'; ctx.lineJoin = 'round'; ctx.strokeText(ch, x, yy);
+    ctx.fillStyle = '#232323'; ctx.fillText(ch, x, yy);
+  });
+  ctx.restore();
+}
+const fade = (t, a, b, f = 0.4) => prog(t, a, a + f) * (1 - prog(t, b - f, b));
+
+window.__info = { fps: FPS, duration: DUR, frames: Math.round(FPS * DUR) };
+window.__render = t => {
+  const cam = camera(t), R = blotR(t);
+  gl.uniform2f(u.res, 1920, 1080); gl.uniform3f(u.cam, ...cam);
+  gl.uniform1f(u.R, R); gl.uniform1f(u.morph, clamp((t - 7.9) / 2.2)); gl.uniform1f(u.t, t);
+  gl.uniform1f(u.gap, 18 + 34 * clamp((t - 4.6) / 2.6)); gl.uniform1f(u.sat, t >= T_HIT ? Math.min(1, (t - T_HIT) / 0.12) : 0);
+  gl.uniform2f(u.zp, ...ZP); gl.uniform2f(u.zd, ...ZD);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  ctx.clearRect(0, 0, 1920, 1080);
+  // falling drop
+  if (t < T_HIT && t > 0.2) {
+    const k = clamp((t - 0.25) / (T_HIT - 0.25)), [ox, oy] = toScreen(cam, [0, 0]);
+    const y = lerp(-90, oy - 14, k * k), st = 1 + 0.35 * k;
+    ctx.fillStyle = `rgba(40,40,40,${0.18 * k})`; ctx.beginPath(); ctx.ellipse(ox + 10, oy + 4, 30 * (0.4 + 0.6 * k), 9 * (0.4 + 0.6 * k), 0, 0, 6.28); ctx.fill();
+    ctx.save(); ctx.translate(ox, y); ctx.scale(1 / Math.sqrt(st), st);
+    const g = ctx.createRadialGradient(-6, -8, 2, 0, 0, 30); g.addColorStop(0, '#5a5c60'); g.addColorStop(0.35, '#16171a'); g.addColorStop(1, '#050506');
+    ctx.fillStyle = g; ctx.beginPath(); ctx.moveTo(0, -46); ctx.bezierCurveTo(10, -26, 24, -10, 24, 6); ctx.arc(0, 6, 24, 0, Math.PI); ctx.bezierCurveTo(-24, -10, -10, -26, 0, -46); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.55)'; ctx.beginPath(); ctx.ellipse(-9, -2, 4, 8, 0.4, 0, 6.28); ctx.fill();
+    ctx.restore();
+  }
+  // labels: spreading
+  vtext(1660, 170, '一滴墨落在宣纸上', 52, fade(t, 1.1, 4.3));
+  vtext(1570, 170, '顺着纤维毛糙地晕开', 52, fade(t, 2.3, 4.3));
+  // labels: zoomed-in
+  const zl = fade(t, 5.25, 7.45, 0.35);
+  if (zl > 0) {
+    const g1 = toScreen(cam, [ZP[0] + ZD[0] * 60, ZP[1] + ZD[1] * 60]);
+    const lx = g1[0] + 70, ly = g1[1] + 210;
+    ctx.save(); ctx.globalAlpha = prog(t, 5.6, 5.9) * zl;
+    ctx.strokeStyle = '#232323'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(lx + 10, ly - 44); ctx.quadraticCurveTo(g1[0] + 30, g1[1] + 90, g1[0] + 4, g1[1] + 12); ctx.stroke();
+    ctx.beginPath(); ctx.arc(g1[0], g1[1], 7, 0, 6.28); ctx.stroke();
+    ctx.font = `700 48px ${SERIF}`; ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
+    ctx.lineWidth = 10; ctx.strokeStyle = 'rgba(236,234,228,0.9)'; ctx.lineJoin = 'round'; ctx.strokeText('细缝', lx, ly + 30); ctx.fillStyle = '#232323'; ctx.fillText('细缝', lx, ly + 30);
+    ctx.restore();
+  }
+  vtext(400, 150, '纤维之间有细缝', 52, zl * prog(t, 5.3, 5.65));
+  vtext(310, 150, '细缝把墨水吸过去', 52, zl * prog(t, 5.95, 6.3));
+  vtext(220, 150, '这就是毛细现象', 52, zl * prog(t, 6.55, 6.9), 900);
+  // finale: inscription + seal
+  const fl = prog(t, 9.7, 10.3);
+  vtext(1720, 150, '一滴墨晕成远山', 54, fl);
+  const sk = prog(t, 10.1, 10.35);
+  if (sk > 0) {
+    ctx.save(); ctx.globalAlpha = 0.92 * sk; ctx.globalCompositeOperation = 'multiply';
+    const s = 1.12 - 0.12 * sk; ctx.translate(1720, 650); ctx.scale(s, s); ctx.rotate(0.02); ctx.drawImage(seal, -66, -66); ctx.restore();
+  }
+  ctx.font = `400 22px "Noto Sans CJK SC", sans-serif`; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic'; ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(236,234,228,0.6)'; ctx.strokeText('水墨 demo · 代码逐帧渲染', 40, 1050); ctx.fillStyle = '#8f8c85';
+  ctx.fillText('水墨 demo · 代码逐帧渲染', 40, 1050);
+  gl.finish();
+  return { seg: 'ink', tau: t.toFixed(2) };
+};
+window.__render(0);
+document.fonts.ready.then(() => { buildSeal(); window.__render(0); window.__ready = true; });
+</script>
+</body>
+</html>

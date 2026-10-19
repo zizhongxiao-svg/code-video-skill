@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin:0; width:1920px; height:1080px; overflow:hidden; background:#0a0a0a; }
+  canvas { display:block; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1920" height="1080"></canvas>
+<script>
+const FPS = 30, DUR = 10;
+const W = 1920, H = 1080, BEAT = 0.5, FPB = FPS * BEAT;
+const cv = document.getElementById('c'), g = cv.getContext('2d');
+const SANS = '"Noto Sans CJK SC", sans-serif', MONO = '"Noto Sans Mono CJK SC", monospace';
+const BK = '#0b0b0b', WH = '#f4f4f1', AC = '#c8ff1e', GR = '#5c5c5c';
+const clamp = (x, a = 0, b = 1) => Math.max(a, Math.min(b, x));
+const lerp = (a, b, k) => a + (b - a) * k;
+const out = x => 1 - Math.pow(1 - clamp(x), 3);
+const punch = u => 1 + 0.1 * Math.exp(-u * 22);
+// reveal amount: already 35% open on the beat frame, fully open after ~0.12 s
+const rev = (u, d = 0.12) => 0.35 + 0.65 * out(u / d);
+
+function bg(c) { g.fillStyle = c; g.fillRect(0, 0, W, H); }
+function font(px, mono, wt) { g.font = `${wt || (mono ? 700 : 900)} ${px}px ${mono ? MONO : SANS}`; }
+function txt(s, x, y, px, col, o = {}) {
+  font(px, o.mono, o.wt); g.fillStyle = col; g.textAlign = o.align || 'center'; g.textBaseline = 'middle';
+  g.fillText(s, x, y + px * 0.04); return g.measureText(s).width;
+}
+function scaled(k, cx, cy, fn) { g.save(); g.translate(cx, cy); g.scale(k, k); g.translate(-cx, -cy); fn(); g.restore(); }
+function clipRect(x, y, w, h, fn) { g.save(); g.beginPath(); g.rect(x, y, w, h); g.clip(); fn(); g.restore(); }
+const wOf = (s, px, mono) => { font(px, mono); return g.measureText(s).width; };
+
+// a word that rises out of a mask
+function riseWord(s, cx, cy, px, col, u, o = {}) {
+  const e = rev(u), w = wOf(s, px, o.mono);
+  clipRect(cx - w / 2 - 40, cy - px * 0.62, w + 80, px * 1.24, () =>
+    scaled(punch(u), cx, cy, () => txt(s, cx, cy + (1 - e) * px * 0.95, px, col, o)));
+  return w;
+}
+// a word wiped in left→right
+function wipeWord(s, cx, cy, px, col, u, o = {}) {
+  const w = wOf(s, px, o.mono), e = rev(u);
+  clipRect(cx - w / 2 - 20, cy - px, (w + 40) * e, px * 2, () => scaled(punch(u), cx, cy, () => txt(s, cx, cy, px, col, o)));
+  return w;
+}
+// top→bottom curtain
+function dropWord(s, cx, cy, px, col, u, o = {}) {
+  const w = wOf(s, px, o.mono), e = rev(u);
+  clipRect(0, cy - px * 0.62, W, px * 1.24 * e, () => scaled(punch(u), cx, cy, () => txt(s, cx, cy, px, col, o)));
+  return w;
+}
+
+// draw fn() cut along a line through (cx, cy): halves shear apart by off, cut line drawn in lineCol
+function sliced(fn, cx, cy, ang, off, lineCol, len) {
+  for (const side of [-1, 1]) {
+    g.save(); g.translate(cx, cy); g.rotate(ang);
+    g.beginPath(); g.rect(-3000, side < 0 ? -3000 : 0, 6000, 3000); g.clip();
+    g.translate(side * off, side * off * 0.35); g.rotate(-ang); g.translate(-cx, -cy); fn(); g.restore();
+  }
+  if (len > 0) { g.save(); g.translate(cx, cy); g.rotate(ang); g.fillStyle = lineCol; g.fillRect(-len / 2, -3, len, 6); g.restore(); }
+}
+function chrome(b, u, dark) {
+  const fg = dark ? 'rgba(244,244,241,0.5)' : 'rgba(11,11,11,0.55)';
+  font(30, true, 500); g.fillStyle = fg; g.textBaseline = 'alphabetic';
+  g.textAlign = 'left'; g.fillText(`${String(b + 1).padStart(2, '0')} / 20`, 60, 80);
+  g.textAlign = 'right'; g.fillText('120 BPM', W - 60, 80);
+  // beat ticks
+  const n = 20, sp = 30, x0 = W / 2 - (n - 1) * sp / 2;
+  for (let i = 0; i < n; i++) {
+    const on = i === b;
+    g.fillStyle = on ? (dark ? AC : BK) : i < b ? fg : (dark ? 'rgba(244,244,241,0.16)' : 'rgba(11,11,11,0.16)');
+    const s = on ? 14 + 6 * Math.exp(-u * 12) : 10;
+    g.fillRect(x0 + i * sp - s / 2, 1030 - s / 2, s, s);
+  }
+  font(22, false, 400); g.fillStyle = dark ? 'rgba(244,244,241,0.38)' : 'rgba(11,11,11,0.42)'; g.textAlign = 'left';
+  g.fillText('卡点金句 demo · 代码逐帧渲染', 40, 1056);
+}
+
+// line made of colored segments, centered at (cx, cy)
+function segLine(parts, cx, cy, px) {
+  const ws = parts.map(([s]) => wOf(s, px)); const tot = ws.reduce((a, b) => a + b, 0);
+  let x = cx - tot / 2; const boxes = [];
+  parts.forEach(([s, col], i) => { txt(s, x, cy, px, col, { align: 'left' }); boxes.push([x, ws[i]]); x += ws[i]; });
+  return boxes;
+}
+
+const SCENES = [
+  // 0 没有
+  (u) => { bg(BK); const w = riseWord('没有', 960, 520, 400, WH, u);
+    if (u >= 0.25) { const k = out((u - 0.25) / 0.08); g.fillStyle = AC; g.fillRect(960 + w / 2 + 30, 520 + 90 - 150 * k, 34, 150 * k); } return true; },
+  // 1 一帧
+  (u) => { bg(WH); const w = wipeWord('一帧', 960, 510, 440, BK, u);
+    if (u >= 0.25) { const k = out((u - 0.25) / 0.1); g.fillStyle = BK; g.fillRect(960 - w / 2, 790, w * k, 26); } return false; },
+  // 2 是 (small, framed by closing brackets)
+  (u) => { bg(BK); scaled(punch(u), 960, 520, () => txt('是', 960, 520, 170, WH));
+    const k = u >= 0.25 ? out((u - 0.25) / 0.1) : 0, gap = lerp(330, 150, k);
+    g.strokeStyle = AC; g.lineWidth = 16; g.lineCap = 'square';
+    g.beginPath(); g.moveTo(960 - gap + 50, 520 - 120); g.lineTo(960 - gap, 520 - 120); g.lineTo(960 - gap, 520 + 120); g.lineTo(960 - gap + 50, 520 + 120); g.stroke();
+    g.beginPath(); g.moveTo(960 + gap - 50, 520 - 120); g.lineTo(960 + gap, 520 - 120); g.lineTo(960 + gap, 520 + 120); g.lineTo(960 + gap - 50, 520 + 120); g.stroke();
+    return true; },
+  // 3 拍的 on accent, slashed on the off-beat
+  (u) => { bg(AC); const k = u >= 0.25 ? out((u - 0.25) / 0.09) : 0, w = wOf('拍的', 420);
+    sliced(() => riseWord('拍的', 960, 520, 420, BK, u), 960, 520, -0.12, 26 * k, BK, (w + 160) * k);
+    return false; },
+  // 4 recap line
+  (u) => { bg(BK); const parts = [['没有一帧是', WH], ['拍的', WH]]; const tot = wOf('没有一帧是拍的', 170);
+    clipRect(960 - tot / 2 - 20, 300, (tot + 40) * rev(u, 0.16), 440, () => segLine(parts, 960, 520, 170));
+    if (u >= 0.25) { const k = out((u - 0.25) / 0.1); g.fillStyle = AC; g.fillRect(960 - tot / 2, 640, tot * k, 14); } return true; },
+  // 5 recap: 拍的 goes accent + strike
+  (u) => { bg(BK); const tot = wOf('没有一帧是拍的', 170), a = wOf('没有一帧是', 170), w = wOf('拍的', 170), x0 = 960 - tot / 2;
+    const k = u >= 0.25 ? out((u - 0.25) / 0.08) : 0;
+    scaled(punch(u) * 0.98 + 0.02, 960, 520, () => {
+      txt('没有一帧是', x0, 520, 170, WH, { align: 'left' });
+      sliced(() => txt('拍的', x0 + a, 520, 170, AC, { align: 'left' }), x0 + a + w / 2, 520, -0.14, 14 * k, WH, (w + 60) * k);
+      g.fillStyle = AC; g.fillRect(x0, 640, tot, 14); });
+    return true; },
+  // 6 每一帧 (curtain), film frame snaps on off-beat
+  (u) => { bg(WH); const w = dropWord('每一帧', 960, 510, 330, BK, u);
+    if (u >= 0.25) { const k = out((u - 0.25) / 0.08), pad = lerp(160, 60, k);
+      g.strokeStyle = BK; g.lineWidth = 12; g.strokeRect(960 - w / 2 - pad, 510 - 165 - pad, w + 2 * pad, 330 + 2 * pad);
+      for (let i = 0; i < 9; i++) { g.fillStyle = BK; const x = 960 - w / 2 - pad + 30 + i * (w + 2 * pad - 60) / 8; g.fillRect(x - 12, 510 - 165 - pad - 44, 24, 24); g.fillRect(x - 12, 510 + 165 + pad + 20, 24, 24); } }
+    return false; },
+  // 7 都是 left, outline echo on off-beat
+  (u) => { bg(BK); riseWord('都是', 700, 520, 280, WH, u);
+    if (u >= 0.25) { const k = out((u - 0.25) / 0.1); font(280); g.strokeStyle = AC; g.lineWidth = 4; g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.strokeText('都是', lerp(700, 1220, k), 520 + 11); }
+    return true; },
+  // 8 代码 in mono accent, cursor on off-beat
+  (u) => { bg(BK); const w = riseWord('代码', 900, 520, 460, AC, u, { mono: true });
+    if (u >= 0.25) { g.fillStyle = WH; g.fillRect(900 + w / 2 + 40, 520 + 120, 120, 40); }
+    font(44, true, 500); g.fillStyle = 'rgba(244,244,241,0.55)'; g.textAlign = 'left'; g.textBaseline = 'alphabetic';
+    g.fillText('render(t)', 900 - w / 2, 520 - 260); return true; },
+  // 9 算出来的: chars land one by one
+  (u) => { bg(WH); const s = '算出来的', px = 300, tot = wOf(s, px); let x = 960 - tot / 2;
+    [...s].forEach((ch, i) => { const uu = u - i * 0.055; const cw = wOf(ch, px);
+      if (uu >= 0) clipRect(x - 4, 520 - px * 0.62, cw + 8, px * 1.24, () => txt(ch, x + cw / 2, 520 + (1 - rev(uu, 0.1)) * px, px, BK)); x += cw; });
+    if (u >= 0.25) { const k = out((u - 0.25) / 0.1); g.fillStyle = BK; g.fillRect(960 - tot / 2, 730, tot * k, 22); } return false; },
+  // 10 recap line 1
+  (u) => { bg(BK); const e = u >= 0.25 ? out((u - 0.25) / 0.1) : 0;
+    clipRect(0, 230, W, 280, () => txt('每一帧都是', 960, 380 + (1 - rev(u)) * 160 - 20 * e, 160, WH)); return true; },
+  // 11 recap line 2 with highlighted 代码
+  (u) => { bg(BK); txt('每一帧都是', 960, 360, 160, WH);
+    const parts = [['代码', AC], ['算出来的', WH]], px = 160;
+    const tot = wOf('代码算出来的', px), w1 = wOf('代码', px), x0 = 960 - tot / 2;
+    if (u >= 0.25) { const k = out((u - 0.25) / 0.08); g.fillStyle = AC; g.fillRect(x0 - 16, 620 - px * 0.6, (w1 + 32) * k, px * 1.2); }
+    clipRect(0, 620 - px * 0.62, W, px * 1.24, () => {
+      const y = 620 + (1 - rev(u)) * px;
+      txt('代码', x0 + w1 / 2, y, px, u >= 0.27 ? BK : AC); txt('算出来的', x0 + w1 + (tot - w1) / 2, y, px, WH);
+    }); return true; },
+];
+// 12–15: four-band build
+const STEPS = ['写清分镜', '按时间算', '先抽帧', '再出片'];
+function bands(i, u) {
+  bg(BK); const bh = 222, y0 = 112;
+  for (let j = 0; j <= i; j++) {
+    const y = y0 + j * bh, cy = y + bh / 2, act = j === i, last = act && i === 3;
+    const fill = last ? AC : act ? WH : BK, ink = act ? BK : '#8a8a86';
+    const e = act ? rev(u, 0.1) : 1;
+    clipRect(0, y + 6, W * e, bh - 12, () => {
+      g.fillStyle = fill; g.fillRect(0, y + 6, W, bh - 12);
+      const tagOn = act && u >= 0.25;
+      if (tagOn) { g.fillStyle = last ? BK : AC; g.fillRect(150, cy - 52, 150, 104); }
+      txt(`0${j + 1}`, 225, cy, 76, tagOn ? (last ? AC : BK) : act ? BK : '#8a8a86', { mono: true });
+      scaled(act ? punch(u) : 1, 420, cy, () => txt(STEPS[j], 420, cy, 150, ink, { align: 'left' }));
+    });
+    if (!act) { g.fillStyle = '#2a2a2a'; g.fillRect(150, y + bh - 6, W - 300, 2); }
+  }
+  return true;
+}
+// 16–19: finale lock-up
+function finale(i, u) {
+  const inv = i === 3, bgc = inv ? WH : BK, ink = inv ? BK : WH;
+  bg(bgc);
+  const px = 112, L1 = 300, L2 = 480, L3 = 680;
+  const show = (k, y, fn) => { if (i < k) return; const uu = k === i ? u : 1; clipRect(0, y - px * 0.64, W, px * 1.28, () => { g.save(); g.translate(0, (1 - rev(uu)) * px); fn(); g.restore(); }); };
+  show(0, L1, () => txt('没有一帧是拍的', 960, L1, px, ink));
+  show(1, L2, () => {
+    const tot = wOf('每一帧都是代码算出来的', px), x0 = 960 - tot / 2, a = wOf('每一帧都是', px), b = wOf('代码', px);
+    g.fillStyle = AC; g.fillRect(x0 + a - 12, L2 - px * 0.6, b + 24, px * 1.2);
+    txt('每一帧都是', x0, L2, px, ink, { align: 'left' }); txt('代码', x0 + a, L2, px, BK, { align: 'left' }); txt('算出来的', x0 + a + b, L2, px, ink, { align: 'left' });
+  });
+  if (i >= 2) {
+    const uu = i === 2 ? u : 1, items = ['写清分镜', '按时间算', '先抽帧', '再出片'], px3 = 62;
+    const ws = items.map(s => wOf(s, px3)), gap = 90, tot = ws.reduce((a, b) => a + b, 0) + gap * 3;
+    let x = 960 - tot / 2;
+    items.forEach((s, j) => { const k = clamp((uu - j * 0.05) / 0.08);
+      if (k > 0) { g.save(); g.globalAlpha = k; txt(s, x, L3 + (1 - k) * 30, px3, inv ? '#3a3a3a' : '#bdbdb8', { align: 'left' });
+        if (j < 3) { g.fillStyle = AC; g.fillRect(x + ws[j] + gap / 2 - 8, L3 - 8, 16, 16); } g.restore(); }
+      x += ws[j] + gap; });
+  }
+  if (i === 3) { const k = out(u / 0.12); g.fillStyle = BK; g.fillRect(960 - 360 * k, 830, 720 * k, 14);
+    if (u >= 0.25) { font(40, true, 500); g.fillStyle = BK; g.textAlign = 'center'; g.textBaseline = 'alphabetic'; g.fillText('FPS = 30 · 300 帧 · 0 帧实拍', 960, 910); } }
+  return !inv;
+}
+
+window.__info = { fps: FPS, duration: DUR, frames: Math.round(FPS * DUR) };
+window.__render = t => {
+  const f = Math.round(t * FPS), b = Math.min(19, Math.floor(f / FPB)), u = (f - b * FPB) / FPS;
+  g.save();
+  const dark = b < 12 ? SCENES[b](u) : b < 16 ? bands(b - 12, u) : finale(b - 16, u);
+  g.restore();
+  g.save(); chrome(b, u, dark); g.restore();
+  return { seg: 'kinetic', tau: t.toFixed(2) };
+};
+Promise.all([`900 200px ${SANS}`, `700 200px ${MONO}`, `500 30px ${MONO}`, `400 22px ${SANS}`].map(f => document.fonts.load(f)))
+  .then(() => document.fonts.ready).then(() => { window.__render(0); window.__ready = true; });
+</script>
+</body>
+</html>

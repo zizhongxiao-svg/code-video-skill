@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin:0; width:1920px; height:1080px; overflow:hidden; background:#fdfdfd; }
+  canvas { display:block; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1920" height="1080"></canvas>
+<script>
+const FPS = 30, DUR = 12;
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const FONT = '"Noto Sans CJK SC","DejaVu Sans",sans-serif';
+const COL = { ink: '#1c1e23', red: '#d8252a', blue: '#1d62d8', orange: '#f07f1a' };
+const clamp = (x, a = 0, b = 1) => Math.max(a, Math.min(b, x));
+const ease = x => { x = clamp(x); return x < .5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2; };
+const easeOut = x => 1 - Math.pow(1 - clamp(x), 2);
+function mulberry32(a) { return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+const rnd = mulberry32(20261018);
+
+// ---------- geometry helpers (all return point lists) ----------
+function wobble(pts, amp = 1.6) {
+  const ph1 = rnd() * 6.28, ph2 = rnd() * 6.28; let s = 0;
+  return pts.map((p, i) => {
+    if (i) s += Math.hypot(p[0] - pts[i - 1][0], p[1] - pts[i - 1][1]);
+    const q = pts[Math.min(i + 1, pts.length - 1)], o = pts[Math.max(i - 1, 0)];
+    let nx = -(q[1] - o[1]), ny = q[0] - o[0]; const L = Math.hypot(nx, ny) || 1; nx /= L; ny /= L;
+    const d = amp * (Math.sin(s / 53 + ph1) * 0.7 + Math.sin(s / 19 + ph2) * 0.3);
+    return [p[0] + nx * d, p[1] + ny * d];
+  });
+}
+function line(x0, y0, x1, y1, amp = 1.4) {
+  const n = Math.max(2, Math.ceil(Math.hypot(x1 - x0, y1 - y0) / 6)), pts = [];
+  for (let i = 0; i <= n; i++) pts.push([x0 + (x1 - x0) * i / n, y0 + (y1 - y0) * i / n]);
+  return wobble(pts, amp);
+}
+function ellipse(cx, cy, rx, ry, a0 = -2.2, turns = 1.08, amp = 2) {
+  const n = Math.ceil(Math.max(rx, ry) * 6.3 * turns / 6), pts = [];
+  for (let i = 0; i <= n; i++) { const a = a0 + turns * 6.2832 * i / n, k = 1 + 0.035 * i / n; pts.push([cx + Math.cos(a) * rx * k, cy + Math.sin(a) * ry * k]); }
+  return wobble(pts, amp);
+}
+function arc(cx, cy, r, a0, a1, amp = 2) {
+  const n = Math.ceil(r * Math.abs(a1 - a0) / 6), pts = [];
+  for (let i = 0; i <= n; i++) { const a = a0 + (a1 - a0) * i / n; pts.push([cx + Math.cos(a) * r, cy + Math.sin(a) * r]); }
+  return wobble(pts, amp);
+}
+function wave(x0, x1, y, lam, amp) {
+  const pts = []; for (let x = x0; x <= x1; x += 3) { const env = clamp((x - x0) / 30) * clamp((x1 - x) / 30) * 0.4 + 0.6; pts.push([x, y + Math.sin((x - x0) / lam * 6.2832) * amp * env]); }
+  return wobble(pts, 0.8);
+}
+function head(x0, y0, x1, y1, s = 26) {
+  const a = Math.atan2(y1 - y0, x1 - x0), b = 0.5;
+  return [[x1 - Math.cos(a - b) * s, y1 - Math.sin(a - b) * s], [x1, y1], [x1 - Math.cos(a + b) * s, y1 - Math.sin(a + b) * s]];
+}
+
+// ---------- scene items ----------
+const items = [];
+function stroke(pts, t0, t1, color = 'ink', w = 7) {
+  const cum = [0]; for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+  items.push({ kind: 's', pts, cum, len: cum[cum.length - 1], t0, t1, color: COL[color], w, ph: rnd() * 6.28 });
+}
+function arrow(x0, y0, x1, y1, t0, t1, color = 'ink', w = 7, hs = 26) {
+  const m = t0 + (t1 - t0) * 0.72;
+  stroke(line(x0, y0, x1, y1, 1.2), t0, m, color, w); stroke(head(x0, y0, x1, y1, hs), m, t1, color, w);
+}
+function text(str, x, y, size, t0, t1, color = 'ink', weight = 500) {
+  items.push({ kind: 't', str, x, y, size, t0, t1, color: COL[color], weight, jit: [...str].map(() => [rnd() - .5, rnd() - .5, rnd() - .5]) });
+  return items[items.length - 1];
+}
+
+// Panel A: why blue
+text('天空为什么是蓝色？', 110, 150, 86, 0.0, 0.9, 'ink', 700);
+stroke(line(104, 182, 880, 176, 2.5), 0.9, 1.15, 'red', 9);
+stroke(ellipse(255, 425, 74, 72, -2.0, 1.06, 2.2), 1.1, 1.5, 'ink', 7);
+for (let i = 0; i < 10; i++) { const a = i / 10 * 6.2832 - 1.4; stroke(line(255 + Math.cos(a) * 96, 425 + Math.sin(a) * 96, 255 + Math.cos(a) * 126, 425 + Math.sin(a) * 126, 0.6), 1.5 + i * 0.03, 1.53 + i * 0.03, 'ink', 6); }
+text('阳光＝各色光混合', 96, 620, 44, 1.85, 2.35);
+stroke(wave(390, 840, 375, 150, 30), 2.35, 2.72, 'orange', 8);
+text('红橙光：波长长', 420, 300, 40, 2.72, 3.05);
+stroke(wave(390, 804, 480, 46, 22), 3.05, 3.42, 'blue', 8);
+text('蓝光：波长短', 420, 565, 40, 3.42, 3.75, 'blue');
+const MOL = [[905, 390], [975, 450], [915, 492], [985, 372]];
+MOL.forEach(([x, y], i) => { const a = i * 0.9; for (const s of [-1, 1]) stroke(ellipse(x + s * Math.cos(a) * 12, y + s * Math.sin(a) * 12, 13, 13, -2, 1.05, 0.6), 3.75 + i * 0.075 + (s + 1) * 0.018, 3.79 + i * 0.075 + (s + 1) * 0.018, 'ink', 5); });
+text('空气分子', 995, 292, 40, 4.05, 4.28);
+stroke(wave(1040, 1190, 375, 150, 30), 4.28, 4.45, 'orange', 8);
+stroke(head(1160, 375, 1192, 375, 24), 4.45, 4.5, 'orange', 8);
+const MC = [945, 432];
+[-132, -84, -36, 14, 66, 114, 160].forEach((d, i) => {
+  const a = d * Math.PI / 180, r0 = 82, r1 = 190;
+  arrow(MC[0] + Math.cos(a) * r0, MC[1] + Math.sin(a) * r0, MC[0] + Math.cos(a) * r1, MC[1] + Math.sin(a) * r1, 4.5 + i * 0.075, 4.57 + i * 0.075, 'blue', 7, 22);
+});
+const F = text('散射强度 ∝ 1/λ', 480, 790, 72, 5.08, 5.6, 'ink', 700);
+const F4 = text('4', 0, 752, 46, 5.6, 5.66, 'ink', 700);
+const FE = { kind: 'lazy', t0: 5.68, t1: 5.95 };
+const NOTE = text('蓝光的散射≈红光的 5.9 倍', 480, 880, 44, 5.95, 6.5, 'red', 500);
+stroke(arc(1590, 905, 285, Math.PI * 1.04, Math.PI * 1.96, 2.5), 6.5, 6.75, 'ink', 6);
+stroke(line(1270, 905, 1890, 905, 1.5), 6.75, 6.88, 'ink', 7);
+stroke(ellipse(1590, 822, 21, 21, -1.6, 1.05, 0.8), 6.88, 6.95, 'ink', 6);
+stroke(line(1590, 845, 1590, 878, 0.5), 6.95, 6.98, 'ink', 6);
+stroke([[1568, 903], [1590, 878], [1612, 903]], 6.98, 7.02, 'ink', 6);
+stroke([[1560, 852], [1590, 858], [1620, 852]], 7.02, 7.05, 'ink', 6);
+[200, 237, 270, 303, 340].forEach((d, i) => {
+  const a = d * Math.PI / 180, x0 = 1590 + Math.cos(a) * 262, y0 = 905 + Math.sin(a) * 262;
+  const hx = 1590, hy = 822, L = Math.hypot(x0 - hx, y0 - hy), k = 62 / L;
+  arrow(x0, y0, hx + (x0 - hx) * k, hy + (y0 - hy) * k, 7.05 + i * 0.07, 7.12 + i * 0.07, 'blue', 6, 20);
+});
+text('抬头四面八方都是蓝光', 1250, 570, 42, 7.4, 7.85);
+
+// Panel B: sunset (world x offset 1920)
+const B = 1920, EC = [B + 960, 2450], ER = 1680, AR = 1860;
+text('日落为什么是红的？', B + 110, 150, 74, 8.2, 8.75, 'ink', 700);
+stroke(arc(EC[0], EC[1], ER, -Math.PI / 2 - 0.56, -Math.PI / 2 + 0.56, 1.5), 8.75, 9.05, 'ink', 8);
+stroke(arc(EC[0], EC[1], AR, -Math.PI / 2 - 0.5, -Math.PI / 2 + 0.5, 2), 9.05, 9.3, 'blue', 4);
+text('大气层', B + 1500, 600, 36, 9.3, 9.45, 'blue');
+const PX = B + 960, PY = 772;
+stroke(ellipse(PX, PY - 62, 15, 15, -1.6, 1.05, 0.5), 9.45, 9.5, 'ink', 6);
+stroke(line(PX, PY - 46, PX, PY - 20, 0.4), 9.5, 9.53, 'ink', 6);
+stroke([[PX - 15, PY], [PX, PY - 20], [PX + 15, PY]], 9.53, 9.56, 'ink', 6);
+stroke(ellipse(PX, 455, 34, 34, -2, 1.06, 1), 9.56, 9.7, 'ink', 6);
+arrow(PX, 530, PX, 682, 9.7, 9.82, 'orange', 7, 20);
+text('正午：路短', PX + 60, 470, 40, 9.82, 10.05);
+stroke(ellipse(B + 120, 712, 50, 50, -2, 1.06, 1.2), 10.05, 10.22, 'ink', 7);
+text('日落', B + 70, 640, 40, 10.22, 10.32);
+stroke(wave(B + 180, PX - 50, 712, 73, 14), 10.3, 10.62, 'orange', 8);
+stroke(head(PX - 80, 712, PX - 48, 712, 22), 10.62, 10.66, 'orange', 8);
+[[B + 300, -70], [B + 470, -110], [B + 640, -60]].forEach(([x, d], i) => {
+  const a = d * Math.PI / 180;
+  arrow(x, 702, x + Math.cos(a) * 95, 702 + Math.sin(a) * 95, 10.66 + i * 0.08, 10.74 + i * 0.08, 'blue', 6, 18);
+});
+text('蓝光半路被散射掉', B + 230, 555, 40, 10.9, 11.15, 'blue');
+stroke([[B + 175, 755], [B + 180, 780], [PX - 40, 780], [PX - 36, 755]], 11.15, 11.25, 'red', 8);
+text('路程可达正午的约 38 倍', B + 200, 845, 42, 11.25, 11.5, 'red');
+text('剩下红橙', PX + 40, 735, 44, 11.5, 11.64, 'orange', 700);
+
+// lazily built (needs measured text widths)
+let built = false;
+function build() {
+  if (built) return; built = true;
+  ctx.font = `700 72px ${FONT}`;
+  const wF = ctx.measureText(F.str).width, wL = ctx.measureText('1/λ').width;
+  F4.x = F.x + wF + 4;
+  const cx = F.x + wF - wL / 2 + 14;
+  const e = ellipse(cx, F.y - 24, wL / 2 + 46, 58, -2.4, 1.08, 2.4);
+  stroke(e, FE.t0, FE.t1, 'red', 8);
+  for (const it of items) if (it.kind === 't') {
+    ctx.font = `${it.weight} ${it.size}px ${FONT}`;
+    let x = it.x; it.ch = [...it.str].map(c => { const w = ctx.measureText(c).width; const o = { c, x, w }; x += w; return o; });
+  }
+}
+
+// ---------- drawing ----------
+function drawStroke(it, f) {
+  const target = it.len * f; if (target <= 0) return null;
+  ctx.strokeStyle = it.color; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  const P = it.pts, C = it.cum; let tip = P[0];
+  for (let i = 1; i < P.length; i++) {
+    if (C[i - 1] >= target) break;
+    let p1 = P[i]; if (C[i] > target) { const k = (target - C[i - 1]) / (C[i] - C[i - 1]); p1 = [P[i - 1][0] + (P[i][0] - P[i - 1][0]) * k, P[i - 1][1] + (P[i][1] - P[i - 1][1]) * k]; }
+    const s = C[i - 1];
+    const press = 0.84 + 0.12 * Math.sin(s / 41 + it.ph) + 0.06 * Math.sin(s / 13 + it.ph * 2);
+    const taper = 0.7 + 0.3 * clamp(s / 24);
+    ctx.lineWidth = it.w * press * taper;
+    ctx.beginPath(); ctx.moveTo(P[i - 1][0], P[i - 1][1]); ctx.lineTo(p1[0], p1[1]); ctx.stroke();
+    tip = p1;
+  }
+  return tip;
+}
+function drawText(it, t) {
+  const n = it.ch.length, dt = (it.t1 - it.t0) / n; let tip = null;
+  ctx.font = `${it.weight} ${it.size}px ${FONT}`; ctx.fillStyle = it.color; ctx.strokeStyle = it.color;
+  ctx.lineWidth = it.size > 60 ? 2.4 : 1.4; ctx.lineJoin = 'round'; ctx.textBaseline = 'alphabetic';
+  for (let i = 0; i < n; i++) {
+    const f = clamp((t - it.t0 - i * dt) / dt); if (f <= 0) break;
+    const o = it.ch[i], j = it.jit[i], s = it.size;
+    const cx = o.x + o.w / 2, cy = it.y - s * 0.36;
+    ctx.save();
+    if (f < 1) { // diagonal wipe, like a pen sweeping over the glyph
+      const d = (o.w + s) * f;
+      ctx.beginPath(); ctx.moveTo(o.x - 4, it.y - s * 1.05); ctx.lineTo(o.x - 4 + d, it.y - s * 1.05); ctx.lineTo(o.x - 4 + d - s * 0.9, it.y + s * 0.25); ctx.lineTo(o.x - 4, it.y + s * 0.25); ctx.closePath(); ctx.clip();
+      tip = [o.x + o.w * f, cy + Math.sin(f * Math.PI * 5) * s * 0.3];
+    }
+    ctx.translate(cx, cy); ctx.rotate(j[0] * 0.11); ctx.scale(1 + j[2] * 0.08, 1 + j[2] * 0.08); ctx.translate(-cx, -cy + j[1] * s * 0.09);
+    ctx.fillText(o.c, o.x, it.y); ctx.strokeText(o.c, o.x, it.y);
+    ctx.restore();
+  }
+  return tip;
+}
+function startOf(it) { return it.kind === 's' ? it.pts[0] : [it.ch[0].x, it.y - it.size * 0.4]; }
+function endOf(it) { if (it.kind === 's') return it.pts[it.pts.length - 1]; const c = it.ch[it.ch.length - 1]; return [c.x + c.w, it.y - it.size * 0.3]; }
+
+function drawPen(x, y, color, lift) {
+  ctx.save(); ctx.translate(x, y); ctx.rotate(0.62); ctx.translate(0, 0);
+  const L = 330, W = 46;
+  // shadow on the board
+  ctx.save(); ctx.translate(16 + lift * 18, 22 + lift * 22); ctx.fillStyle = 'rgba(30,35,45,0.10)';
+  ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(40, -W / 2); ctx.lineTo(L, -W / 2); ctx.lineTo(L, W / 2); ctx.lineTo(40, W / 2); ctx.closePath(); ctx.fill(); ctx.restore();
+  ctx.translate(-lift * 6, -lift * 10);
+  ctx.fillStyle = color; ctx.beginPath(); ctx.moveTo(-2, 0); ctx.lineTo(16, -7); ctx.lineTo(16, 7); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#5b616b'; ctx.beginPath(); ctx.moveTo(14, -8); ctx.lineTo(46, -W / 2); ctx.lineTo(46, W / 2); ctx.lineTo(14, 8); ctx.closePath(); ctx.fill();
+  const g = ctx.createLinearGradient(0, -W / 2, 0, W / 2); g.addColorStop(0, '#ffffff'); g.addColorStop(0.45, '#eef0f3'); g.addColorStop(1, '#c4c9d1');
+  ctx.fillStyle = g; ctx.fillRect(46, -W / 2, L - 46, W);
+  ctx.fillStyle = color; ctx.fillRect(46, -W / 2, 22, W); ctx.fillRect(L - 70, -W / 2, 70, W);
+  ctx.fillStyle = 'rgba(255,255,255,0.35)'; ctx.fillRect(L - 70, -W / 2 + 6, 70, 7);
+  ctx.strokeStyle = 'rgba(40,44,52,0.35)'; ctx.lineWidth = 2; ctx.strokeRect(46, -W / 2, L - 46, W);
+  ctx.restore();
+}
+
+function board() {
+  ctx.fillStyle = '#fdfdfd'; ctx.fillRect(0, 0, 1920, 1080);
+  const g = ctx.createLinearGradient(300, 0, 1500, 1080);
+  g.addColorStop(0, 'rgba(225,231,238,0.55)'); g.addColorStop(0.38, 'rgba(255,255,255,0)'); g.addColorStop(0.5, 'rgba(255,255,255,0.9)'); g.addColorStop(0.62, 'rgba(255,255,255,0)'); g.addColorStop(1, 'rgba(222,228,236,0.6)');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, 1920, 1080);
+}
+const GHOST = []; { const r = mulberry32(7); for (let i = 0; i < 9; i++) GHOST.push([r() * 3840, 150 + r() * 800, 80 + r() * 220, r() * 3]); }
+
+window.__info = { fps: FPS, duration: DUR, frames: Math.round(FPS * DUR) };
+window.__render = t => {
+  build();
+  board();
+  const cam = 1920 * ease((t - 7.95) / 0.6);
+  ctx.save(); ctx.translate(-cam, 0);
+  ctx.strokeStyle = 'rgba(120,130,145,0.022)'; ctx.lineWidth = 40; ctx.lineCap = 'round';
+  for (const [x, y, w, a] of GHOST) { ctx.beginPath(); ctx.moveTo(x, y); ctx.quadraticCurveTo(x + w / 2, y - 30 + a * 20, x + w, y + 10); ctx.stroke(); }
+  let active = null, tipActive = null;
+  for (const it of items) {
+    if (t < it.t0) continue;
+    const f = clamp((t - it.t0) / (it.t1 - it.t0));
+    const tip = it.kind === 's' ? drawStroke(it, f) : drawText(it, t);
+    if (t <= it.t1 && (!active || it.t0 >= active.t0)) { active = it; tipActive = tip || startOf(it); }
+  }
+  // pen
+  let px, py, pc, lift = 0;
+  if (active) { [px, py] = tipActive; pc = active.color; }
+  else {
+    let prev = null, next = null;
+    for (const it of items) { if (it.t1 < t && (!prev || it.t1 > prev.t1)) prev = it; if (it.t0 > t && (!next || it.t0 < next.t0)) next = it; }
+    const off = [cam + 2150, 1250];
+    const a = prev ? endOf(prev) : off, b = next ? startOf(next) : off;
+    const ta = prev ? prev.t1 : 0, tb = next ? next.t0 : DUR;
+    const k = ease((t - ta) / Math.max(0.01, tb - ta));
+    px = a[0] + (b[0] - a[0]) * k; py = a[1] + (b[1] - a[1]) * k;
+    lift = Math.sin(Math.PI * clamp(k)) * Math.min(1, (tb - ta) / 0.15);
+    pc = (next || prev).color;
+    if (!next) { const kk = ease((t - ta) / 0.32); px = a[0] + (off[0] - a[0]) * kk; py = a[1] + (off[1] - a[1]) * kk; lift = Math.min(1, kk * 3); }
+  }
+  drawPen(px, py, pc, lift);
+  ctx.restore();
+  ctx.font = `22px ${FONT}`; ctx.fillStyle = '#a2a8b0'; ctx.fillText('白板手绘 demo · 代码逐帧渲染', 60, 1050);
+  return { seg: 'whiteboard', tau: t.toFixed(2) };
+};
+document.fonts.load(`700 72px "Noto Sans CJK SC"`).then(() => document.fonts.ready).then(() => { window.__render(0); window.__ready = true; });
+</script>
+</body>
+</html>

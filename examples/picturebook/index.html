@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin:0; width:1920px; height:1080px; overflow:hidden; background:#fefefe; }
+  canvas { display:block; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1920" height="1080"></canvas>
+<script>
+const FPS = 30, DUR = 12;
+const cv = document.getElementById('c'), g = cv.getContext('2d');
+const FONT = '"Noto Sans CJK SC", sans-serif';
+const PI = Math.PI;
+const clamp = (x, a = 0, b = 1) => Math.max(a, Math.min(b, x));
+const lerp = (a, b, k) => a + (b - a) * k;
+const ease = x => { x = clamp(x); return x < .5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2; };
+const easeOut = x => { x = clamp(x); return 1 - Math.pow(1 - x, 3); };
+const back = x => { x = clamp(x); const c1 = 1.6, c3 = c1 + 1; return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2); };
+const prog = (t, a, b) => ease((t - a) / (b - a));
+const spring = dt => dt < 0 ? 0 : Math.exp(-dt * 8) * Math.sin(dt * 20);
+function h3(a, b, c) {
+  let h = Math.imul(a | 0, 0x27d4eb2d) ^ Math.imul((b | 0) + 0x9e37, 0x165667b1) ^ Math.imul((c | 0) + 0x7f4a, 0x9e3779b1);
+  h ^= h >>> 15; h = Math.imul(h, 0x85ebca6b); h ^= h >>> 13; h = Math.imul(h, 0xc2b2ae35); h ^= h >>> 16; return (h >>> 0) / 4294967296;
+}
+function mulberry32(a) { return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+
+const INK = '#2f2926';
+const COL = { sky: '#a5d6f4', soil: '#bf8a5a', soil2: '#9a6943', grass: '#7cc35a', seed: '#b0763f', seedG: '#b8db6a', root: '#f2deb0', stem: '#86c95c', leaf: '#5cb446', trunk: '#a06c43', sun: '#ffd23f', water: '#4aa8e8', pebble: '#bdb5aa', worm: '#f4a3b8', cheek: '#ff9db0' };
+function shade(hex, a) { const n = parseInt(hex.slice(1), 16); let r = n >> 16, gg = n >> 8 & 255, b = n & 255; const f = v => Math.round(a > 0 ? v + (255 - v) * a : v * (1 + a)); return `rgb(${f(r)},${f(gg)},${f(b)})`; }
+
+// ---------- paper + crayon grain (seeded, generated once) ----------
+const paper = document.createElement('canvas'); paper.width = 1920; paper.height = 1080;
+{ const p = paper.getContext('2d'), R = mulberry32(7); p.fillStyle = '#fefefe'; p.fillRect(0, 0, 1920, 1080);
+  for (let i = 0; i < 26000; i++) { p.fillStyle = `rgba(120,110,100,${0.02 + R() * 0.05})`; p.fillRect(R() * 1920, R() * 1080, 1 + R() * 2.5, 1 + R() * 1.2); } }
+const grainC = document.createElement('canvas'); grainC.width = grainC.height = 320;
+{ const p = grainC.getContext('2d'), R = mulberry32(11); p.lineCap = 'round';
+  for (let i = 0; i < 1500; i++) { const x = R() * 320, y = R() * 320, l = 2 + R() * 7, a = -0.9 + (R() - .5) * .5; p.strokeStyle = `rgba(254,254,252,${0.55 + R() * 0.45})`; p.lineWidth = 1 + R() * 1.6;
+    for (const ox of [-320, 0, 320]) for (const oy of [-320, 0, 320]) { p.beginPath(); p.moveTo(x + ox, y + oy); p.lineTo(x + ox + Math.cos(a) * l, y + oy + Math.sin(a) * l); p.stroke(); } }
+  for (let i = 0; i < 70; i++) { p.fillStyle = `rgba(254,254,252,${0.4 + R() * 0.5})`; const x = R() * 320, y = R() * 320; p.beginPath(); p.ellipse(x, y, 2 + R() * 5, 1 + R() * 2, -0.9, 0, 7); p.fill(); } }
+let GRAIN;
+
+// ---------- camera + boiling ----------
+const cam = { x: 960, y: 735, z: 2.6 };
+let BF = 0;
+const S = p => [(p[0] - cam.x) * cam.z + 960, (p[1] - cam.y) * cam.z + 540];
+function J(p, id, amp) { return p.map((q, i) => [q[0] + (h3(id, i, BF) - .5) * 2 * amp, q[1] + (h3(id, i + 911, BF) - .5) * 2 * amp]); }
+function smooth(p, closed) {
+  g.beginPath(); const n = p.length, m = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+  if (closed) { const s = m(p[n - 1], p[0]); g.moveTo(s[0], s[1]); for (let i = 0; i < n; i++) { const q = m(p[i], p[(i + 1) % n]); g.quadraticCurveTo(p[i][0], p[i][1], q[0], q[1]); } g.closePath(); }
+  else { g.moveTo(p[0][0], p[0][1]); for (let i = 1; i < n - 1; i++) { const q = m(p[i], p[i + 1]); g.quadraticCurveTo(p[i][0], p[i][1], q[0], q[1]); } g.lineTo(p[n - 1][0], p[n - 1][1]); }
+}
+function ink(sp, id, closed, w = 4.4, amp = 1.7, col = INK) {
+  g.lineCap = 'round'; g.lineJoin = 'round'; g.strokeStyle = col;
+  smooth(J(sp, id, amp), closed); g.lineWidth = w; g.stroke();
+  g.globalAlpha = .32; smooth(J(sp, id + 7777, amp * 1.3), closed); g.lineWidth = w * .45; g.stroke(); g.globalAlpha = 1;
+}
+function crayon(sp, col, id, o = {}) {
+  const ox = (o.ox ?? 3.5) + (h3(id, 1, BF) - .5) * 3, oy = (o.oy ?? 2.5) + (h3(id, 2, BF) - .5) * 3;
+  const p = J(sp.map(q => [q[0] + ox, q[1] + oy]), id + 31, 1.4);
+  let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+  for (const q of p) { x0 = Math.min(x0, q[0]); y0 = Math.min(y0, q[1]); x1 = Math.max(x1, q[0]); y1 = Math.max(y1, q[1]); }
+  x0 = Math.max(x0, -10); y0 = Math.max(y0, -10); x1 = Math.min(x1, 1930); y1 = Math.min(y1, 1090); if (x1 <= x0 || y1 <= y0) return;
+  g.save(); smooth(p, true); g.clip();
+  g.globalAlpha = o.a ?? .86; g.fillStyle = col; g.fillRect(x0, y0, x1 - x0, y1 - y0);
+  const ang = o.ang ?? -0.9, ca = Math.cos(ang), sa = Math.sin(ang), cx = (x0 + x1) / 2, cy = (y0 + y1) / 2, R = Math.hypot(x1 - x0, y1 - y0) / 2 + 10;
+  g.globalAlpha = .3; g.strokeStyle = o.h || shade(col, -.2); g.lineWidth = 2.6; g.beginPath();
+  for (let d = -R, k = 0; d < R; d += 7, k++) { const dd = d + (h3(id, k, BF) - .5) * 3, a = R * (0.6 + 0.4 * h3(id, k + 50, BF)); g.moveTo(cx - sa * dd - ca * a, cy + ca * dd - sa * a); g.lineTo(cx - sa * dd + ca * a, cy + ca * dd + sa * a); }
+  g.stroke();
+  g.globalAlpha = 1; GRAIN.setTransform(new DOMMatrix([1, 0, 0, 1, Math.floor(h3(id, 3, BF) * 320), Math.floor(h3(id, 4, BF) * 320)]));
+  g.fillStyle = GRAIN; g.fillRect(x0, y0, x1 - x0, y1 - y0);
+  g.restore();
+}
+function shape(wp, col, id, o = {}) { const sp = wp.map(S); if (col) crayon(sp, col, id, o); if (!o.noInk) ink(sp, id, true, o.w); }
+function ellW(cx, cy, rx, ry, n = 14, rot = 0) { return Array.from({ length: n }, (_, i) => { const a = i / n * PI * 2, x = Math.cos(a) * rx, y = Math.sin(a) * ry; return [cx + x * Math.cos(rot) - y * Math.sin(rot), cy + x * Math.sin(rot) + y * Math.cos(rot)]; }); }
+function bumpy(cx, cy, R, n, seed, amp = .1) { return Array.from({ length: n }, (_, i) => { const a = i / n * PI * 2, r = R * (1 + amp * Math.sin(a * 7 + seed) + amp * .6 * Math.sin(a * 3 + seed * 2)); return [cx + Math.cos(a) * r, cy + Math.sin(a) * r]; }); }
+function inkText(s, x, y, size, id, o = {}) {
+  g.save(); g.globalAlpha = o.a ?? 1; g.font = `${o.w || 500} ${size}px ${FONT}`; g.fillStyle = o.col || INK; g.textAlign = o.align || 'center'; g.textBaseline = 'middle';
+  g.fillText(s, x + (h3(id, 5, BF) - .5) * 2.2, y + (h3(id, 6, BF) - .5) * 2.2); g.restore();
+}
+function plen(P) { let s = 0; for (let i = 1; i < P.length; i++) s += Math.hypot(P[i][0] - P[i - 1][0], P[i][1] - P[i - 1][1]); return s; }
+function along(P, s) { for (let i = 1; i < P.length; i++) { const l = Math.hypot(P[i][0] - P[i - 1][0], P[i][1] - P[i - 1][1]); if (s <= l || i === P.length - 1) { const k = clamp(s / l); return [lerp(P[i - 1][0], P[i][0], k), lerp(P[i - 1][1], P[i][1], k)]; } s -= l; } }
+function resample(P, Lc, N) { return Array.from({ length: N }, (_, i) => along(P, Lc * i / (N - 1))); }
+function tube(c, wfn, col, id, o = {}) {
+  const n = c.length; if (n < 2) return; const L = [], R = [];
+  for (let i = 0; i < n; i++) {
+    const a = c[Math.max(0, i - 1)], b = c[Math.min(n - 1, i + 1)]; let dx = b[0] - a[0], dy = b[1] - a[1]; const l = Math.hypot(dx, dy) || 1; dx /= l; dy /= l;
+    const w = wfn(i / (n - 1)) / 2; L.push([c[i][0] - dy * w, c[i][1] + dx * w]); R.push([c[i][0] + dy * w, c[i][1] - dx * w]);
+  }
+  shape(L.concat(R.reverse()), col, id, o);
+}
+function arrowInk(p0, p1, id, col = INK, dash = false) {
+  const a = S(p0), b = S(p1), ang = Math.atan2(b[1] - a[1], b[0] - a[0]);
+  g.save(); if (dash) g.setLineDash([16, 14]);
+  const mid = [(a[0] + b[0]) / 2 + (h3(id, 9, BF) - .5) * 6, (a[1] + b[1]) / 2 + (h3(id, 10, BF) - .5) * 6];
+  ink([a, mid, b], id, false, 5, 1.2, col); g.setLineDash([]);
+  ink([[b[0] - Math.cos(ang - .45) * 26, b[1] - Math.sin(ang - .45) * 26], b, [b[0] - Math.cos(ang + .45) * 26, b[1] - Math.sin(ang + .45) * 26]], id + 1, false, 5, 1, col);
+  g.restore();
+}
+
+// ---------- the seed hero ----------
+function seedPts(sc) {
+  return Array.from({ length: 16 }, (_, i) => { const a = i / 16 * PI * 2; let x = Math.cos(a) * 46, y = Math.sin(a) * 33; if (y > 0) y -= 8 * Math.exp(-x * x / 260) * Math.sin(a); return [x * sc, y * sc]; });
+}
+function face(cx, cy, u, rot, st, id) {
+  const R = (x, y) => [cx + (x * Math.cos(rot) - y * Math.sin(rot)) * u, cy + (x * Math.sin(rot) + y * Math.cos(rot)) * u];
+  crayon(ellW(...R(-25, 8), 7 * u, 4.5 * u, 8), COL.cheek, id + 1, { ox: 0, oy: 0, a: .7 }); crayon(ellW(...R(25, 8), 7 * u, 4.5 * u, 8), COL.cheek, id + 2, { ox: 0, oy: 0, a: .7 });
+  const lw = Math.max(2.6, u * .55), lk = st.look || [0, 0];
+  for (const d of [-1, 1]) {
+    const ex = d * 13, ey = -5, pts = [];
+    if (st.eye === 'sleep' || st.eye === 'happy') {
+      const up = st.eye === 'happy' ? -1 : 1;
+      for (let k = 0; k <= 6; k++) { const a = PI * (0.15 + 0.7 * k / 6); pts.push(R(ex + Math.cos(a) * 6, ey - 3 * up + Math.sin(a) * 6 * up)); }
+      ink(pts, id + 10 + d, false, lw, .6);
+    } else if (st.eye === 'effort') {
+      ink([R(ex - 5 * d, ey - 5), R(ex + 4 * d, ey), R(ex - 5 * d, ey + 5)], id + 10 + d, false, lw, .6);
+    } else if (st.eye === 'blink') {
+      ink([R(ex - 6, ey), R(ex + 6, ey)], id + 10 + d, false, lw, .6);
+    } else {
+      const big = st.eye === 'wow' ? 1.35 : 1, [px, py] = R(ex + lk[0] * 2.5, ey + lk[1] * 2.5);
+      if (big > 1) { g.beginPath(); g.arc(...R(ex, ey), 7 * u, 0, 7); g.fillStyle = '#fff'; g.fill(); g.lineWidth = lw * .8; g.strokeStyle = INK; g.stroke(); }
+      g.beginPath(); g.arc(px, py, 4.6 * u / big, 0, 7); g.fillStyle = INK; g.fill();
+      g.beginPath(); g.arc(px + 1.4 * u, py - 1.6 * u, 1.5 * u, 0, 7); g.fillStyle = '#fff'; g.fill();
+    }
+  }
+  const m = st.mouth || 'smile';
+  if (m === 'o') { g.beginPath(); g.ellipse(...R(0, 11), 3.6 * u, 4.4 * u, rot, 0, 7); g.fillStyle = INK; g.fill(); }
+  else if (m === 'flat') ink([R(-5, 11), R(5, 11)], id + 20, false, lw, .6);
+  else if (m === 'grit') { ink([R(-8, 9), R(8, 9), R(8, 14), R(-8, 14)], id + 20, true, lw * .9, .5); ink([R(-8, 11.5), R(8, 11.5)], id + 21, false, lw * .6, .4); }
+  else { const pts = []; const big = m === 'grin' ? 1.4 : 1; for (let k = 0; k <= 6; k++) { const a = PI * (0.12 + 0.76 * k / 6); pts.push(R(Math.cos(a) * 7 * big, 7 + Math.sin(a) * 6 * big)); } ink(pts, id + 20, false, lw, .6); }
+}
+function seed(x, y, sc, rot, col, st, crack) {
+  const [cx, cy] = S([x, y]), u = sc * cam.z;
+  const pts = seedPts(sc * cam.z).map(([px, py]) => [cx + px * Math.cos(rot) - py * Math.sin(rot), cy + px * Math.sin(rot) + py * Math.cos(rot)]);
+  crayon(pts, col, 500); ink(pts, 500, true, 4.6);
+  const hl = ellW(cx - 22 * u * Math.cos(rot) + 14 * u * Math.sin(rot), cy - 22 * u * Math.sin(rot) - 14 * u * Math.cos(rot), 9 * u, 5 * u, 8, rot - .4);
+  crayon(hl, '#ffffff', 505, { ox: 0, oy: 0, a: .75 });
+  if (crack > 0) { const R = (a, b) => [cx + (a * Math.cos(rot) - b * Math.sin(rot)) * u, cy + (a * Math.sin(rot) + b * Math.cos(rot)) * u];
+    const cp = [R(18, -30), R(24, -22), R(19, -16), R(27, -8), R(22, -2)]; ink(cp.slice(0, Math.max(2, Math.round(cp.length * crack))), 520, false, 3.2, .8); }
+  face(cx, cy, u, rot * .25, st, 540);
+}
+
+// ---------- world layout ----------
+const GROUND = 600;
+const surf = Array.from({ length: 36 }, (_, i) => { const x = -800 + i * 100; return [x, GROUND + Math.sin(x * .011) * 6]; });
+const PEBBLES = [[700, 700, 22, 14], [1250, 690, 18, 12], [560, 880, 26, 16], [1390, 960, 20, 13], [800, 1080, 24, 15], [1180, 1160, 22, 14], [300, 760, 20, 12], [1660, 820, 24, 15], [130, 1010, 22, 14], [1820, 1080, 20, 13]];
+const ROOT_P = [[960, 822], [955, 880], [966, 940], [956, 1000], [968, 1060], [961, 1120], [970, 1190], [963, 1270]];
+const LAT = [[70, .55, 170], [100, 2.55, 190], [160, .35, 230], [190, 2.8, 210], [260, .65, 180], [310, 2.5, 160]];
+const DROPS = [0.15, 0.45, 0.75, 1.05, 1.35];
+const CANOPY = [[-330, 150, 120], [330, 160, 125], [-210, 40, 170], [210, 40, 175], [-110, 170, 160], [120, 160, 165], [0, -40, 200], [0, 90, 190]];
+const GREENS = ['#4fa83f', '#5cb446', '#6fc04f', '#4a9e3c', '#7fcb58', '#62b84a', '#58b043', '#7ac553'];
+const FRUITS = [[-150, 60], [90, -20], [200, 120], [-40, 190], [-260, 200], [40, 60]];
+const CAPS = ['种子喝饱了水，身体胀得鼓鼓的。', '根最先钻出来，一路往下找水喝。', '小芽弓着背，顶开泥土钻出地面。', '叶子晒太阳，用水和二氧化碳做养分，还放出氧气。', '一年又一年，小芽长成大树，又结出新种子。'];
+const STEP_T = [0, 2.2, 4.4, 6.4, 8.6];
+const STEP_C = ['#4aa8e8', '#e8a24a', '#86c95c', '#ffc93c', '#5cb446'];
+
+function setCam(t) {
+  let x = 960, y = 735, lz = Math.log(2.6);
+  for (const [a, b, tx, ty, tz] of [[2.0, 3.0, 960, 880, 2.0], [4.2, 5.4, 960, 640, 1.6], [6.0, 7.0, 960, 520, 1.35], [8.6, 11.3, 960, 210, 0.7]]) {
+    const k = ease((t - a) / (b - a)); x = lerp(x, tx, k); y = lerp(y, ty, k); lz = lerp(lz, Math.log(tz), k);
+  }
+  cam.x = x; cam.y = y; cam.z = Math.exp(lz);
+}
+const hookAt = t => t < 4.4 ? 0 : t < 5.5 ? easeOut((t - 4.4) / 0.25) : 1 - prog(t, 5.55, 6.2);
+const seedY = t => t < 4.4 ? 790 : lerp(790, 470, ease((t - 4.45) / 1.75));
+const g5 = t => prog(t, 8.7, 11.2);
+
+window.__info = { fps: FPS, duration: DUR, frames: Math.round(FPS * DUR) };
+window.__render = t => {
+  BF = Math.floor(Math.round(t * FPS) / 3);
+  setCam(t); GRAIN = GRAIN || g.createPattern(grainC, 'repeat');
+  g.setTransform(1, 0, 0, 1, 0, 0); g.drawImage(paper, 0, 0);
+  const G = g5(t);
+
+  // sky, clouds, sun
+  shape([[-900, -1400], [2900, -1400], ...surf.slice().reverse()].reverse(), COL.sky, 10, { noInk: true, a: .7, ang: -0.6 });
+  [[380, 230, 120, 50], [1320, 90, 150, 56], [2050, 280, 130, 50], [-300, 20, 120, 46]].forEach(([x, y, rx, ry], i) => {
+    const dx = t * 14 * (i % 2 ? 1 : .7), pts = Array.from({ length: 18 }, (_, k) => { const a = k / 18 * PI * 2; let px = Math.cos(a) * rx * (1 + .14 * Math.abs(Math.sin(a * 2.5 + i))), py = Math.sin(a) * ry * (1 + .25 * Math.abs(Math.sin(a * 3 + i))); if (py > 0) py *= .45; return [x + dx + px, y + py]; });
+    shape(pts, '#ffffff', 20 + i * 3, { a: .95 });
+  });
+  const sunK = back((t - 6.3) / 0.5);
+  if (sunK > 0.01) {
+    const [sx, sy] = S([lerp(1460, 1900, G), lerp(220, -380, G)]), r = 72 * cam.z * sunK;
+    for (let i = 0; i < 10; i++) { const a = i / 10 * PI * 2 + t * .25, r1 = r * 1.25, r2 = r * (i % 2 ? 1.6 : 1.8);
+      const tri = [[sx + Math.cos(a - .12) * r1, sy + Math.sin(a - .12) * r1], [sx + Math.cos(a) * r2, sy + Math.sin(a) * r2], [sx + Math.cos(a + .12) * r1, sy + Math.sin(a + .12) * r1]];
+      crayon(tri, '#ffb627', 60 + i, { ox: 1, oy: 1 }); ink(tri, 60 + i, true, 3.6, 1); }
+    const sp = ellW(sx, sy, r, r, 16); crayon(sp, COL.sun, 58); ink(sp, 58, true);
+    face(sx, sy, r / 32, 0, { eye: 'happy', mouth: 'grin' }, 590);
+  }
+  if (t > 9) for (let i = 0; i < 2; i++) { const k = (t - 9) / 3, x = lerp(200 + i * 160, 1500 + i * 120, k), y = -330 + i * 70 + Math.sin(t * 3 + i) * 15, f = Math.sin(t * 14 + i * 2) * 10;
+    ink([S([x - 26, y - 8 + f]), S([x, y + 4]), S([x + 26, y - 8 + f])], 80 + i, false, 4); }
+
+  // soil cross-section
+  shape([...surf, [2900, 1700], [-900, 1700]], COL.soil, 100, { noInk: true, a: .8 });
+  const deep = Array.from({ length: 36 }, (_, i) => { const x = -800 + i * 100; return [x, 930 + Math.sin(x * .007 + 1) * 22]; });
+  shape([...deep, [2900, 1700], [-900, 1700]], COL.soil2, 101, { noInk: true, a: .7 });
+  ink(deep.map(S), 102, false, 3, 1.6, 'rgba(47,41,38,.35)');
+  PEBBLES.forEach(([x, y, rx, ry], i) => shape(ellW(x, y, rx, ry, 10, i * .7), COL.pebble, 120 + i * 2, { w: 3.6 }));
+  { // earthworm
+    const wp = Array.from({ length: 9 }, (_, i) => { const x = 1180 + i * 22 + t * 6; return [x, 820 + Math.sin(i * .9 - t * 4) * 9]; });
+    const sp = wp.map(S); g.lineCap = 'round'; g.lineJoin = 'round';
+    smooth(J(sp, 140, 1), false); g.strokeStyle = INK; g.lineWidth = 20 * cam.z + 8; g.stroke(); g.strokeStyle = COL.worm; g.lineWidth = 20 * cam.z; g.stroke();
+    const [hx, hy] = sp[sp.length - 1]; g.fillStyle = INK; g.beginPath(); g.arc(hx + 3 * cam.z, hy - 3 * cam.z, 2.4 * cam.z, 0, 7); g.fill();
+  }
+  // grass strip
+  const top = surf.map(([x, y]) => [x, y - 16 - Math.sin(x * .05) * 3]);
+  shape([...surf, ...top.slice().reverse()], COL.grass, 150, { noInk: true, a: .9 });
+  ink(top.map(S), 151, false, 4);
+  for (let x = -760; x < 2800; x += 46) { if (Math.abs(x - 960) < 40) continue; const y = GROUND - 14 + Math.sin(x * .011) * 6, s = 10 + 8 * h3(x, 1, 0);
+    ink([S([x - s * .6, y - s]), S([x, y]), S([x + s * .5, y - s * 1.2])], 160 + (x | 0), false, 3.2, 1); }
+
+  // water drops soaking down to the seed
+  DROPS.forEach((td, i) => {
+    const k = (t - td) / 0.6; if (k < 0 || k > 1) return;
+    const x = lerp(890 + i * 35, 950 + (i - 2) * 10, k) + Math.sin(k * 8 + i) * 6, y = lerp(612, 762, easeOut(k)), s = 13 * (1 - k * .3);
+    const pts = Array.from({ length: 10 }, (_, j) => { const a = j / 10 * PI * 2; const r = s * (1 - .55 * Math.max(0, -Math.sin(a)) ** 3); return [x + Math.cos(a) * r * .8, y + Math.sin(a) * r * (Math.sin(a) < 0 ? 1.6 : 1)]; });
+    shape(pts, COL.water, 200 + i * 3, { w: 3.4, ox: 1, oy: 1 });
+  });
+
+  // roots
+  const Lc = 260 * prog(t, 2.3, 4.2) + 210 * G;
+  if (Lc > 4) {
+    LAT.forEach(([s0, a, len], i) => {
+      const early = i < 2 ? 0.28 * prog(t, 3.5, 4.4) : 0, l = len * Math.max(early, clamp((G - i * .08) / .5)); if (l < 6 || s0 > Lc) return;
+      const p0 = along(ROOT_P, s0), c = Array.from({ length: 6 }, (_, k) => { const f = k / 5; return [p0[0] + Math.cos(a) * l * f, p0[1] + Math.sin(a) * l * f + f * f * 30]; });
+      tube(c, f => lerp(5 + 14 * G, 2, f), COL.root, 300 + i * 7, { w: 3.4 });
+    });
+    tube(resample(ROOT_P, Lc, 12), f => lerp(14 + 30 * G, 3, f), COL.root, 280);
+    if (t > 2.6) for (let s = 24, k = 0; s < Lc - 26; s += 16, k++) {
+      const p = along(ROOT_P, s), side = k % 2 ? 1 : -1, w = (14 + 30 * G) / 2 * (1 - s / Lc), l = 12 + 6 * h3(k, 2, 0);
+      const a = S([p[0] + side * w, p[1]]), b = S([p[0] + side * (w + l), p[1] + l * .7]);
+      g.globalAlpha = clamp((t - 2.6) * 2) * (1 - G); ink([a, b], 400 + k, false, 2.4, .8); g.globalAlpha = 1;
+    }
+  }
+
+  // stem / sprout / trunk
+  const h = hookAt(t), sy = seedY(t), sw = 1 + 0.28 * prog(t, 0.5, 2.0) + DROPS.reduce((a, d) => a + 0.035 * spring(t - d - 0.6), 0);
+  const sx = 960 + 42 * h, srot = h * 2.6, fade = 1 - prog(t, 9.0, 9.5);
+  if (t > 4.4 && G < 0.999) {
+    const ax = sx - 28 * sw * Math.sin(srot), ay = sy + 28 * sw * Math.cos(srot);
+    const B = [960, 822], C1 = [960, ay - 70 * h - 10], C2 = [ax - 12 * h, ay - 60 * h], A = [ax, ay];
+    const c = Array.from({ length: 12 }, (_, i) => { const u = i / 11, v = 1 - u; return [v * v * v * B[0] + 3 * v * v * u * C1[0] + 3 * v * u * u * C2[0] + u * u * u * A[0], v * v * v * B[1] + 3 * v * v * u * C1[1] + 3 * v * u * u * C2[1] + u * u * u * A[1]]; });
+    g.globalAlpha = 1 - clamp((G - .6) / .3); tube(c, () => 12, COL.stem, 600); g.globalAlpha = 1;
+  }
+  // soil bursting open when the hook breaks through
+  if (t > 5.15 && t < 6.0) { const k = (t - 5.15) / 0.85;
+    for (let i = 0; i < 9; i++) { const a = -PI / 2 + (i - 4) * .3, d = 30 + 140 * k * (0.6 + .4 * h3(i, 3, 0)), x = 960 + Math.cos(a) * d, y = GROUND - 10 + Math.sin(a) * d * 0.8 + 260 * k * k;
+      g.globalAlpha = 1 - k; shape(ellW(x, y, 9, 7, 7, i), COL.soil2, 640 + i * 2, { w: 3 }); g.globalAlpha = 1; } }
+  // first true leaves
+  const lk = back((t - 6.6) / 0.6) * (1 - clamp((G - .35) / .2));
+  if (lk > 0.01) {
+    const top = [960, 470 - 30 - 60 * lk]; tube([[960, 446], top], () => 10, COL.stem, 650);
+    for (const d of [-1, 1]) { const base = top, L = 120 * lk, a = -PI / 2 + d * 1.05 + Math.sin(t * 2 + d) * .05;
+      const tip = [base[0] + Math.cos(a) * L, base[1] + Math.sin(a) * L], n = [-Math.sin(a), Math.cos(a)];
+      const pts = [base, [base[0] + Math.cos(a) * L * .3 + n[0] * L * .28, base[1] + Math.sin(a) * L * .3 + n[1] * L * .28], [base[0] + Math.cos(a) * L * .7 + n[0] * L * .25, base[1] + Math.sin(a) * L * .7 + n[1] * L * .25], tip,
+        [base[0] + Math.cos(a) * L * .7 - n[0] * L * .25, base[1] + Math.sin(a) * L * .7 - n[1] * L * .25], [base[0] + Math.cos(a) * L * .3 - n[0] * L * .28, base[1] + Math.sin(a) * L * .3 - n[1] * L * .28]];
+      shape(pts, COL.leaf, 660 + d * 5); ink([S(base), S([base[0] + Math.cos(a) * L * .8, base[1] + Math.sin(a) * L * .8])], 670 + d, false, 2.6, .8); }
+  }
+  // tree
+  if (G > 0.001) {
+    const H = lerp(170, 820, G), wb = lerp(14, 116, G), wt = lerp(8, 30, G);
+    const trunkAt = f => [960 + Math.sin(f * 2.2) * 14 * G, GROUND - H * f];
+    tube([[960, 828], [960, GROUND + 4]], f => lerp(14 + 30 * G, wb, f), COL.root, 700);
+    tube(Array.from({ length: 9 }, (_, i) => trunkAt(i / 8)), f => lerp(wb, wt, Math.pow(f, .8)), COL.trunk, 710);
+    [[.5, -2.4, 280], [.58, -.75, 300], [.72, -2.05, 220], [.78, -1.05, 230], [.9, -1.6, 170]].forEach(([f, a, len], i) => {
+      const gb = clamp((G - .2 - i * .06) / .45); if (gb <= 0) return; const p0 = trunkAt(f), l = len * gb;
+      tube(Array.from({ length: 6 }, (_, k) => { const u = k / 5; return [p0[0] + Math.cos(a) * l * u, p0[1] + Math.sin(a) * l * u - u * u * 30]; }), u => lerp(lerp(6, 30, G), 5, u), COL.trunk, 720 + i * 5);
+    });
+    if (G > .3) for (let i = 0; i < 4; i++) { const f = .1 + i * .13, p = trunkAt(f), w = lerp(wb, wt, f) * .25; g.globalAlpha = clamp((G - .3) * 4);
+      ink([S([p[0] - w, p[1] - 10]), S([p[0] - w * .4, p[1] - 22]), S([p[0] - w * .6, p[1] - 40])], 760 + i, false, 3, 1); g.globalAlpha = 1; }
+    const T = trunkAt(1);
+    CANOPY.forEach(([dx, dy, R], i) => { const k = back((G - .5 - i * .035) / .3); if (k <= 0.01) return; shape(bumpy(T[0] + dx * 1.2, T[1] + 120 + dy * 1.2, R * 1.25 * k, 20, i * 1.7, .07), GREENS[i], 800 + i * 4); });
+    FRUITS.forEach(([dx, dy], i) => { const k = back((t - 10.7 - i * .06) / .3); if (k <= 0.01) return; if (i < 2 && t > 11.2) return;
+      shape(ellW(T[0] + dx * 1.2, T[1] + 120 + dy * 1.2, 22 * k, 16 * k, 10, .4), COL.seed, 850 + i * 3, { w: 3.4 }); });
+    for (let i = 0; i < 2; i++) { const k = (t - 11.2 - i * .12) / .55; if (k < 0) continue; const [dx, dy] = FRUITS[i], x0 = T[0] + dx * 1.2, y0 = T[1] + 120 + dy * 1.2;
+      const y = Math.min(GROUND - 30, lerp(y0, GROUND - 30, k * k)), bounce = k > 1 ? Math.abs(Math.sin((k - 1) * 9)) * 30 * Math.exp(-(k - 1) * 4) : 0;
+      seed(x0 + (i ? 60 : -60) * Math.min(k, 1.4), y - bounce, 1.0, k * 4 * (i ? 1 : -1) * (k < 1 ? 1 : 0), COL.seed, { eye: 'happy', mouth: 'grin' }, 0); }
+    const fk = back((t - 9.4) / 0.45);
+    if (fk > 0.01) { const p = trunkAt(.24); face(...S(p), 4.4 * G * cam.z * fk, 0, { eye: (t > 10.5 && t < 10.62) ? 'blink' : 'open', look: [0, -0.5], mouth: 'smile' }, 900); }
+  }
+  // seed coat halves left on the ground
+  if (t > 6.2) for (const d of [-1, 1]) { const k = clamp((t - 6.2) / 0.5), x = 960 + d * (20 + 70 * k), y = lerp(460, GROUND - 12, k * k), r = d * (k * 2.2);
+    const pts = Array.from({ length: 9 }, (_, i) => { const a = PI * i / 8; return [Math.cos(a) * 26 * d, -Math.sin(a) * 18]; }).map(([px, py]) => [x + px * Math.cos(r) - py * Math.sin(r), y + px * Math.sin(r) + py * Math.cos(r)]);
+    shape(pts, COL.seed, 950 + d, { w: 3.6 }); }
+
+  // the hero seed
+  if (fade > 0.01) {
+    let st = { eye: 'open', mouth: 'smile', look: [0, 0] };
+    if (t < 1.0) st = { eye: 'sleep', mouth: 'flat' };
+    else if (t < 2.2) st = { eye: (t > 1.55 && t < 1.65) ? 'blink' : 'open', mouth: t < 1.4 ? 'o' : 'smile', look: [0, -1] };
+    else if (t < 4.4) st = { eye: (t > 3.6 && t < 3.7) ? 'blink' : t > 3.8 ? 'happy' : 'open', mouth: t < 3.0 ? 'flat' : 'smile', look: [0, 1] };
+    else if (t < 5.6) st = { eye: 'effort', mouth: 'grit' };
+    else if (t < 6.4) st = { eye: t < 5.95 ? 'wow' : 'happy', mouth: t < 5.95 ? 'o' : 'grin' };
+    else if (t < 8.6) st = { eye: (t > 7.6 && t < 7.7) ? 'blink' : 'happy', mouth: 'smile' };
+    else st = { eye: 'open', mouth: 'o', look: [0, -1] };
+    const col = t < 6.25 ? COL.seed : COL.seedG;
+    g.globalAlpha = fade; seed(sx, sy, sw * (0.4 + 0.6 * fade), srot, col, st, prog(t, 1.6, 2.0) * (t < 6.25 ? 1 : 0)); g.globalAlpha = 1;
+    if (t < 1.0) [0, 1, 2].forEach(i => { const k = ((t * 1.2 + i / 3) % 1); inkText('z', ...S([1012 + k * 30 + i * 4, 752 - k * 45]), 34 + i * 9, 20 + i, { a: Math.sin(k * PI), w: 700 }); });
+  }
+
+  // photosynthesis notes
+  if (t > 6.7 && t < 8.75) {
+    const a = k => clamp((t - k) / 0.3) * (1 - prog(t, 8.45, 8.75));
+    g.globalAlpha = a(6.8); arrowInk([1390, 255], [1040, 360], 990, '#e39b00', true); inkText('阳光', ...S([1290, 240]), 40, 991, { w: 700, col: '#c47f00' });
+    g.globalAlpha = a(7.1); arrowInk([600, 340], [870, 385], 992); inkText('二氧化碳', ...S([600, 305]), 40, 993, { w: 700 });
+    g.globalAlpha = a(7.4); arrowInk([985, 760], [985, 520], 994, '#2f86d0'); inkText('水', ...S([1035, 680]), 40, 995, { w: 700, col: '#2f86d0' });
+    g.globalAlpha = a(7.7); for (let i = 0; i < 4; i++) { const k = ((t - 7.7) * .8 + i / 4) % 1; shape(ellW(1075 + k * 150 + i * 6, 400 + Math.sin(k * 6 + i) * 8 - k * 30, 10, 10, 8), '#d9f0ff', 996 + i * 3, { w: 3, ox: 1, oy: 1 }); }
+    inkText('氧气', ...S([1275, 425]), 40, 1010, { w: 700 });
+    g.globalAlpha = 1;
+  }
+
+  // title + narration
+  const ta = 1 - prog(t, 1.9, 2.3);
+  if (ta > 0) inkText('一颗种子，怎么长成大树？', 90, 62, 58, 30, { a: ta, w: 900, align: 'left' });
+  for (let i = 0; i < 5; i++) {
+    const a0 = STEP_T[i] + 0.2, b0 = i < 4 ? STEP_T[i + 1] + 0.15 : 99, a = clamp((t - a0) / 0.3) * (1 - clamp((t - b0 + 0.25) / 0.25));
+    if (a <= 0) continue;
+    g.save(); g.globalAlpha = a; g.font = `500 44px ${FONT}`;
+    const w = g.measureText(CAPS[i]).width + 150, x0 = 960 - w / 2, y0 = 942, hh = 92;
+    const box = [[x0, y0], [x0 + w * .5, y0 - 3], [x0 + w, y0], [x0 + w + 3, y0 + hh * .5], [x0 + w, y0 + hh], [x0 + w * .5, y0 + hh + 3], [x0, y0 + hh], [x0 - 3, y0 + hh * .5]];
+    smooth(J(box, 1100 + i, 1.5), true); g.fillStyle = 'rgba(255,255,253,.94)'; g.fill(); ink(box, 1100 + i, true, 4);
+    const bc = ellW(x0 + 52, y0 + hh / 2, 27, 27, 12); crayon(bc, STEP_C[i], 1120 + i, { ox: 2, oy: 2 }); ink(bc, 1120 + i, true, 3.6);
+    inkText(String(i + 1), x0 + 52, y0 + hh / 2 + 2, 34, 1130 + i, { w: 900 });
+    inkText(CAPS[i], x0 + 98, y0 + hh / 2 + 2, 44, 1140 + i, { align: 'left' });
+    g.restore();
+  }
+  g.globalAlpha = 1;
+  inkText('绘本科普 demo · 代码逐帧渲染', 40, 1056, 22, 1200, { align: 'left', col: 'rgba(47,41,38,.45)', w: 400 });
+  return { seg: 'picturebook', tau: t.toFixed(2) };
+};
+document.fonts.load(`500 44px ${FONT}`).then(() => document.fonts.ready).then(() => { window.__render(0); window.__ready = true; });
+</script>
+</body>
+</html>

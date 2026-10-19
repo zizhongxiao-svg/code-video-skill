@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin:0; width:1920px; height:1080px; overflow:hidden; background:#000; }
+  canvas { position:absolute; left:0; top:0; width:1920px; height:1080px; image-rendering: pixelated; }
+  #foot { position:absolute; left:40px; bottom:16px; font:22px "Noto Sans CJK SC",sans-serif; color:rgba(255,255,255,0.42); letter-spacing:1px; }
+</style>
+</head>
+<body>
+<canvas id="lo" width="320" height="180"></canvas>
+<canvas id="tx" width="640" height="360"></canvas>
+<div id="foot">像素典故 demo · 代码逐帧渲染</div>
+<script>
+const FPS = 30, DUR = 12;
+const lo = document.getElementById('lo'), L = lo.getContext('2d');
+const tx = document.getElementById('tx'), T = tx.getContext('2d');
+const FONT = '"Noto Sans CJK SC",sans-serif';
+const clamp = (x, a = 0, b = 1) => Math.max(a, Math.min(b, x));
+function mulberry32(a) { return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+
+const C = {
+  k: '#17111f', white: '#f6f4e6',
+  sky1: '#3f9be0', sky2: '#8fd6f2', cloud: '#f6f4e6', cloudD: '#b9d8ea',
+  sun: '#ffd84a', sunD: '#f7a02a', moon: '#f2efc8',
+  hill1: '#5a9e8c', hill2: '#3e7d66', grass: '#5cb043', grassD: '#3a8a38', grassL: '#9ad656',
+  soil: '#8f5c34', soilD: '#62391f', soilL: '#b47e4a',
+  wood: '#7c4b27', woodD: '#4d2c16', woodL: '#a8703c', ring: '#dcaa6a', ringD: '#b5803f',
+  skin: '#f1b98a', skinD: '#c7865a', hat: '#e9c45a', hatD: '#b18a2e', shirt: '#3e6fb9', shirtD: '#2a4c87', pants: '#5c4636', shoe: '#2c201a',
+  rab: '#ece4d4', rabD: '#b6a892', pink: '#f49cb2',
+  weed: '#8a9a3c', weedD: '#5d6a28', weedL: '#b9b850',
+  wall: '#3b4560', wallD: '#2f3750', floor: '#4a3a34', floorD: '#3a2c28', sofa: '#7e3f52', sofaD: '#5b2b3b',
+  hood: '#5c6d8e', hoodD: '#43506d', jeans: '#2f3d5c', phone: '#121218', scr: '#9ff4ff', glow: '#59d6ea', red: '#ef4d52', yel: '#ffe066',
+  win: '#1a1f45', winL: '#ffd27a', city: '#262c55',
+};
+const hex = h => [1, 3, 5].map(i => parseInt(h.substr(i, 2), 16));
+const mix = (a, b, k) => { const A = hex(a), B = hex(b); return '#' + A.map((v, i) => Math.round(v + (B[i] - v) * k).toString(16).padStart(2, '0')).join(''); };
+
+// ---------- low-res primitives ----------
+const R = (x, y, w, h, c) => { L.fillStyle = c; L.fillRect(Math.round(x), Math.round(y), w, h); };
+const P = (x, y, c) => R(x, y, 1, 1, c);
+function sky(top, bot, y0, y1, bands = 7) {
+  const h = (y1 - y0) / bands;
+  for (let b = 0; b < bands; b++) {
+    const c = mix(top, bot, b / (bands - 1)), ya = Math.round(y0 + b * h), yb = Math.round(y0 + (b + 1) * h);
+    R(0, ya, 320, yb - ya, c);
+    if (b < bands - 1) { const c2 = mix(top, bot, (b + 1) / (bands - 1)); L.fillStyle = c2; for (let x = 0; x < 320; x += 2) L.fillRect(x + (yb & 1), yb - 1, 1, 1); }
+  }
+}
+function disc(cx, cy, r, c, cD) {
+  for (let y = -r; y <= r; y++) for (let x = -r; x <= r; x++) { const d = x * x + y * y; if (d <= r * r + r * 0.6) P(cx + x, cy + y, cD && d > (r - 1.5) * (r - 1.5) && (x + y) > 0 ? cD : c); }
+}
+function cloud(x, y, s) {
+  const blobs = [[0, 0, 6], [7, -3, 7], [14, 0, 6], [7, 2, 6]];
+  for (let yy = -11; yy <= 9; yy++) for (let xx = -7; xx <= 21; xx++) {
+    let inside = false; for (const [bx, by, r] of blobs) if ((xx - bx) ** 2 + (yy - by) ** 2 <= (r * s) ** 2) inside = true;
+    if (inside && yy <= 6) P(x + xx, y + yy, yy >= 4 ? C.cloudD : C.cloud);
+  }
+}
+function line(x0, y0, x1, y1, c) {
+  x0 = Math.round(x0); y0 = Math.round(y0); x1 = Math.round(x1); y1 = Math.round(y1);
+  const dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1; let e = dx + dy;
+  for (;;) { P(x0, y0, c); if (x0 === x1 && y0 === y1) break; const e2 = 2 * e; if (e2 >= dy) { e += dy; x0 += sx; } if (e2 <= dx) { e += dx; y0 += sy; } }
+}
+// parts: {r:[x,y,w,h],c} | {l:[x0,y0,x1,y1],c}; outline pass then fill pass
+function sprite(parts, ox, oy, fx = false, fy = false) {
+  const tr = p => { if (p.r) { let [x, y, w, h] = p.r; if (fx) x = -x - w; if (fy) y = -y - h; return { r: [x, y, w, h], c: p.c, no: p.no }; }
+    let [a, b, c2, d] = p.l; if (fx) { a = -a; c2 = -c2; } if (fy) { b = -b; d = -d; } return { l: [a, b, c2, d], c: p.c, no: p.no }; };
+  const ps = parts.map(tr);
+  for (const p of ps) { if (p.no) continue; if (p.r) R(ox + p.r[0] - 1, oy + p.r[1] - 1, p.r[2] + 2, p.r[3] + 2, C.k);
+    else for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) line(ox + p.l[0] + dx, oy + p.l[1] + dy, ox + p.l[2] + dx, oy + p.l[3] + dy, C.k); }
+  for (const p of ps) { if (p.r) R(ox + p.r[0], oy + p.r[1], p.r[2], p.r[3], C[p.c] || p.c); else line(ox + p.l[0], oy + p.l[1], ox + p.l[2], oy + p.l[3], C[p.c] || p.c); }
+}
+
+// ---------- characters ----------
+function farmerHead(dx = 0, dy = 0) {
+  return [
+    { r: [-2 + dx, -18 + dy, 6, 5], c: 'skin' }, { r: [-2 + dx, -14 + dy, 6, 1], c: 'skinD', no: 1 },
+    { r: [-6 + dx, -19 + dy, 14, 1], c: 'hatD' }, { r: [-4 + dx, -20 + dy, 10, 1], c: 'hat' }, { r: [-2 + dx, -21 + dy, 6, 1], c: 'hat' }, { r: [0 + dx, -22 + dy, 2, 1], c: 'hat' },
+    { r: [2 + dx, -17 + dy, 1, 1], c: 'k', no: 1 },
+  ];
+}
+function farmer(pose, f) {
+  const torso = [{ r: [-3, -13, 7, 8], c: 'shirt' }, { r: [-3, -13, 2, 8], c: 'shirtD', no: 1 }, { r: [-3, -7, 7, 1], c: 'soilD', no: 1 }];
+  if (pose === 'hoe') {
+    const up = f === 0, lean = up ? 0 : 1;
+    return [
+      { r: [-3, -6, 2, 5], c: 'pants' }, { r: [1, -6, 2, 5], c: 'pants' }, { r: [-4, -1, 3, 1], c: 'shoe' }, { r: [1, -1, 3, 1], c: 'shoe' },
+      ...torso.map(p => ({ ...p, r: [p.r[0] + lean, ...p.r.slice(1)] })), ...farmerHead(lean, 0),
+      up ? { l: [4, -12, 9, -24], c: 'woodD' } : { l: [6, -10, 13, -1], c: 'woodD' },
+      up ? { r: [8, -26, 5, 2], c: '#9aa3ad' } : { r: [12, -1, 5, 2], c: '#9aa3ad' },
+      up ? { r: [2, -13, 3, 2], c: 'shirt' } : { r: [3, -11, 3, 2], c: 'shirt' },
+      up ? { r: [4, -14, 2, 2], c: 'skin' } : { r: [5, -11, 2, 2], c: 'skin' },
+    ];
+  }
+  if (pose === 'jump') {
+    return [
+      { r: [-4, -6, 2, 5], c: 'pants' }, { r: [2, -6, 2, 5], c: 'pants' }, { r: [-5, -1, 3, 1], c: 'shoe' }, { r: [2, -1, 3, 1], c: 'shoe' },
+      ...torso, ...farmerHead(0, 0),
+      { r: [-5, -21, 2, 8], c: 'shirt' }, { r: [4, -21, 2, 8], c: 'shirt' }, { r: [-5, -23, 2, 2], c: 'skin' }, { r: [4, -23, 2, 2], c: 'skin' },
+      { r: [0, -16, 2, 1], c: 'k', no: 1 },
+    ];
+  }
+  // sit (by the stump, chin on hand)
+  return [
+    { r: [-1, -4, 8, 3], c: 'pants' }, { r: [5, -4, 2, 4], c: 'pants' }, { r: [5, -1, 4, 1], c: 'shoe' },
+    { r: [-3, -11, 7, 7], c: 'shirt' }, { r: [-3, -11, 2, 7], c: 'shirtD', no: 1 },
+    ...farmerHead(0, 2 + (f ? 1 : 0)),
+    { r: [3, -8, 3, 3], c: 'shirt' }, { r: [4, -12 + (f ? 1 : 0), 2, 4], c: 'skin' },
+  ];
+}
+function rabbit(pose, f) {
+  if (pose === 'ko') return [ // flat on its back, legs up
+    { r: [-4, -4, 8, 4], c: 'rab' }, { r: [-3, -4, 6, 1], c: 'rabD', no: 1 }, { r: [-3, -6, 1, 2], c: 'rabD' }, { r: [2, -6, 1, 2], c: 'rabD' },
+    { r: [4, -4, 4, 4], c: 'rab' }, { r: [8, -1, 5, 1], c: 'rab' }, { r: [8, -3, 4, 1], c: 'rab' }, { r: [9, -1, 3, 1], c: 'pink', no: 1 },
+    { r: [-6, -3, 2, 2], c: 'white' },
+  ];
+  if (pose === 'run' && f) return [
+    { r: [-5, -7, 9, 4], c: 'rab' }, { r: [3, -10, 4, 4], c: 'rab' }, { r: [2, -14, 2, 5], c: 'rab' }, { r: [2, -13, 1, 3], c: 'pink', no: 1 },
+    { r: [-8, -5, 3, 1], c: 'rabD' }, { r: [4, -4, 3, 1], c: 'rabD' }, { r: [-7, -8, 2, 2], c: 'white' }, { r: [5, -9, 1, 1], c: 'k', no: 1 }, { r: [7, -8, 1, 1], c: 'pink', no: 1 },
+  ];
+  return [
+    { r: [-4, -5, 8, 4], c: 'rab' }, { r: [3, -8, 4, 4], c: 'rab' }, { r: [3, -13, 1, 5], c: 'rab' }, { r: [5, -12, 1, 4], c: 'rab' }, { r: [3, -12, 1, 3], c: 'pink', no: 1 },
+    { r: [-4, -1, 3, 1], c: 'rabD' }, { r: [2, -1, 2, 1], c: 'rabD' }, { r: [-6, -5, 2, 2], c: 'white' },
+    { r: [5, -7, 1, 1], c: pose === 'daze' ? 'rab' : 'k', no: 1 }, { r: [7, -6, 1, 1], c: 'pink', no: 1 },
+  ];
+}
+function stump(cx, gy, w, h) {
+  const e = Math.max(2, Math.round(w / 5)), x0 = cx - (w >> 1);
+  // roots + trunk
+  R(x0 - 3, gy - 3, w + 6, 3, C.k); R(x0 - 2, gy - 2, w + 4, 2, C.woodD);
+  R(x0 - 1, gy - h, w + 2, h, C.k); R(x0, gy - h, w, h - 1, C.wood);
+  for (let x = x0 + 2; x < x0 + w - 1; x += 3) R(x, gy - h + e, 1, h - e - 2, (x / 3 | 0) % 2 ? C.woodD : C.woodL);
+  R(x0, gy - h, 2, h - 1, C.woodD);
+  // top face with rings
+  const ty = gy - h, rx = w / 2 + 0.5, ry = e;
+  for (let y = -ry - 1; y <= ry + 1; y++) for (let x = -rx - 1; x <= rx + 1; x++) {
+    const d = Math.sqrt((x / rx) ** 2 + (y / ry) ** 2), d2 = Math.sqrt((x / (rx + 1)) ** 2 + (y / (ry + 1)) ** 2);
+    if (d <= 1) P(cx + x, ty + y, Math.floor(d * 3.2) % 2 ? C.ringD : C.ring); else if (d2 <= 1) P(cx + x, ty + y, C.k);
+  }
+}
+function hoeOnGround(x, y) { line(x, y, x + 16, y - 2, C.k); line(x, y - 1, x + 16, y - 3, C.woodD); R(x + 16, y - 6, 2, 5, C.k); R(x + 16, y - 5, 2, 3, '#9aa3ad'); }
+
+// ---------- scenery ----------
+function hills(base, c1, c2) {
+  for (let x = 0; x < 320; x++) {
+    const h1 = 14 + Math.round(6 * Math.sin(x / 23) + 4 * Math.sin(x / 9 + 1));
+    const h2 = 7 + Math.round(4 * Math.sin(x / 15 + 2) + 2 * Math.sin(x / 6));
+    R(x, base - h1, 1, h1, c1); R(x, base - h2, 1, h2, c2);
+  }
+}
+function field(x0, x1, y0, y1, weedK, seed) {
+  for (let y = y0; y < y1; y++) { const row = Math.floor(Math.sqrt(y - y0 + 1) * 2.2); R(x0, y, x1 - x0, 1, row % 2 ? C.soil : C.soilD); }
+  for (let y = y0 + 3; y < y1; y += 7) for (let x = x0 + ((y >> 1) % 5); x < x1; x += 11) P(x, y, C.soilL);
+  if (weedK > 0) {
+    const r = mulberry32(seed);
+    for (let i = 0; i < 420; i++) {
+      const x = x0 + Math.floor(r() * (x1 - x0)), y = y0 + 3 + Math.floor(r() * (y1 - y0 - 3)), grow = clamp(weedK * 1.6 - r() * 0.6);
+      const hgt = Math.round(grow * (5 + r() * 12) * (0.6 + (y - y0) / (y1 - y0)));
+      const lean = r() < 0.5 ? -1 : 1, rc = r(), col = rc < 0.3 ? C.weedD : rc < 0.6 ? C.weed : rc < 0.8 ? C.grassD : C.weedL;
+      for (let k = 0; k < hgt; k++) P(x + Math.round(lean * k * k / 30), y - k, col);
+      if (hgt > 7 && r() < 0.35) P(x + lean, y - hgt, C.weedL);
+    }
+  }
+}
+function meadow(x0, y0, y1, seed) {
+  R(x0, y0, 320 - x0, y1 - y0, C.grass);
+  const r = mulberry32(seed);
+  for (let i = 0; i < 160; i++) { const x = x0 + Math.floor(r() * (320 - x0)), y = y0 + Math.floor(r() * (y1 - y0)); P(x, y, r() < 0.5 ? C.grassD : C.grassL); if (r() < 0.3) P(x, y - 1, C.grassD); }
+}
+
+// ---------- text layer (thresholded CJK = real bitmap glyphs) ----------
+const cache = {};
+function glyphs(str, size, color, edge = C.k, weight = 900) {
+  const key = [str, size, color, edge, weight].join('|'); if (cache[key]) return cache[key];
+  const m = document.createElement('canvas'), mc = m.getContext('2d');
+  mc.font = `${weight} ${size}px ${FONT}`; const w = Math.ceil(mc.measureText(str).width) + 6, h = Math.ceil(size * 1.45);
+  m.width = w; m.height = h; mc.font = `${weight} ${size}px ${FONT}`; mc.fillStyle = '#fff'; mc.textBaseline = 'middle'; mc.fillText(str, 3, h / 2);
+  const id = mc.getImageData(0, 0, w, h); for (let i = 3; i < id.data.length; i += 4) id.data[i] = id.data[i] > 100 ? 255 : 0; mc.putImageData(id, 0, 0);
+  const tint = col => { const c = document.createElement('canvas'); c.width = w; c.height = h; const cc = c.getContext('2d'); cc.drawImage(m, 0, 0); cc.globalCompositeOperation = 'source-in'; cc.fillStyle = col; cc.fillRect(0, 0, w, h); return c; };
+  const out = document.createElement('canvas'); out.width = w + 4; out.height = h + 4; const oc = out.getContext('2d');
+  if (edge) { const e = tint(edge); for (let dy = -1; dy <= 2; dy++) for (let dx = -1; dx <= 2; dx++) oc.drawImage(e, 2 + dx, 2 + dy); }
+  oc.drawImage(tint(color), 2, 2);
+  return cache[key] = out;
+}
+function say(str, cx, cy, size, color = C.white, edge = C.k) { const g = glyphs(str, size, color, edge); T.drawImage(g, Math.round(cx - g.width / 2), Math.round(cy - g.height / 2)); return g.width; }
+function captionBox(str, k = 1) {
+  const x = 10, y = 142, w = 300, h = 28;
+  R(x, y, w, h, C.k); R(x + 1, y + 1, w - 2, h - 2, '#262043'); R(x + 2, y + 2, w - 4, h - 4, '#1b1733');
+  R(x + 1, y + 1, w - 2, 1, '#8a7fd0'); R(x + 1, y + h - 2, w - 2, 1, '#100d22');
+  [[x + 2, y + 2], [x + w - 3, y + 2], [x + 2, y + h - 3], [x + w - 3, y + h - 3]].forEach(([a, b]) => P(a, b, C.yel));
+  const n = [...str].length, shown = [...str].slice(0, Math.ceil(n * clamp(k))).join('');
+  if (shown) { const g = glyphs(shown, 22, C.white, null, 700); T.drawImage(g, 40, 312 - g.height / 2); }
+}
+const typed = (t, a, cps = 18) => clamp((t - a) * cps / 14);
+
+// ---------- scenes ----------
+function sceneFarm(t, mode) {
+  // mode: 'plough' | 'wait' ; wait uses fast day/night cycle
+  let top = C.sky1, bot = C.sky2, sunY = 24, sunX = 268, night = 0;
+  if (mode === 'wait') {
+    const u = (t - 6.2) / 2.8, ph = (u * 3.25 + 0.15) % 1, q = Math.floor(ph * 16) / 16;
+    const keys = [[0, C.sky1, C.sky2], [0.38, C.sky1, C.sky2], [0.5, '#6b4a9e', '#f39a5a'], [0.6, '#141a40', '#2e3478'], [0.88, '#141a40', '#2e3478'], [0.96, '#5a6ab0', '#f2b8a0'], [1, C.sky1, C.sky2]];
+    for (let i = 0; i < keys.length - 1; i++) if (q >= keys[i][0] && q <= keys[i + 1][0]) { const k = (q - keys[i][0]) / (keys[i + 1][0] - keys[i][0]); top = mix(keys[i][1], keys[i + 1][1], k); bot = mix(keys[i][2], keys[i + 1][2], k); }
+    night = q > 0.55 && q < 0.92 ? 1 : 0;
+    const a = (ph < 0.55 ? ph / 0.55 : (ph - 0.55) / 0.45) * Math.PI;
+    sunX = 20 + (1 - Math.cos(a)) / 2 * 280; sunY = 70 - Math.sin(a) * 56;
+  }
+  sky(top, bot, 0, 84);
+  if (night) { const r = mulberry32(5); for (let i = 0; i < 40; i++) P(Math.floor(r() * 320), Math.floor(r() * 70), r() < 0.3 ? C.star || '#fff6c0' : '#c9cfff'); disc(Math.round(sunX), Math.round(sunY), 6, C.moon); }
+  else { disc(Math.round(sunX), Math.round(sunY), 9, C.sun, C.sunD); }
+  if (!night) { cloud(Math.round(40 + t * 4) % 360 - 30, 22, 1); cloud(Math.round(170 + t * 3) % 360 - 30, 36, 0.8); }
+  hills(86, night ? '#28395a' : C.hill1, night ? '#1d2a45' : C.hill2);
+  R(0, 84, 320, 8, night ? '#2b5a3a' : C.grass); for (let x = 0; x < 320; x += 3) P(x, 84 + (x % 2), night ? '#204a30' : C.grassD);
+  const wk = mode === 'wait' ? clamp((t - 6.3) / 2.6) : 0;
+  field(0, 196, 92, 180, wk, 11);
+  meadow(196, 92, 180, 3);
+  if (night) { L.fillStyle = 'rgba(20,24,70,0.45)'; L.fillRect(0, 84, 320, 96); }
+  stump(240, 126, 16, 9);
+  if (mode === 'plough') sprite(farmer('hoe', Math.floor(t * 4) % 2), 104, 132);
+  else { hoeOnGround(92, 150); sprite(farmer('sit', Math.floor(t * 2) % 2), 222, 127); }
+}
+function sceneRabbit(t) {
+  const hit = 3.32, shake = t > hit && t < hit + 0.22 ? (Math.floor(t * 30) % 2 ? 1 : -1) : 0;
+  L.save(); L.scale(2, 2); L.translate(shake, 0);
+  sky(C.sky1, C.sky2, 0, 48, 6); cloud(30, 14, 0.8); cloud(118, 9, 0.7);
+  hills(50, C.hill1, C.hill2);
+  meadow(-4, 48, 90, 21); R(-4, 48, 170, 1, C.grassD);
+  for (const [bx, by] of [[14, 55], [148, 57]]) { for (let y = -5; y <= 0; y++) for (let x = -8; x <= 8; x++) if (x * x / 64 + y * y / 25 <= 1) P(bx + x, by + y, y < -3 ? C.grassL : C.grassD); }
+  stump(104, 68, 24, 14);
+  let rx, ry, pose = 'run', f = Math.floor(t * 12) % 2, flipY = false;
+  if (t < hit) { rx = -12 + (t - 2.4) / (hit - 2.4) * 96; ry = 67 - Math.abs(Math.sin((t - 2.4) * 15)) * 5; }
+  else if (t < hit + 0.3) { const k = (t - hit) / 0.3; rx = 84 - k * 22; ry = 67 - Math.sin(k * Math.PI) * 14; pose = 'stand'; flipY = k > 0.5; }
+  else { rx = 62; ry = 69; pose = 'ko'; }
+  if (pose === 'stand' && flipY) { pose = 'ko'; flipY = false; }
+  rx = Math.round(rx); ry = Math.round(ry);
+  sprite(rabbit(pose, f), rx, ry, false, flipY);
+  if (pose === 'ko') {
+    for (const [a, b] of [[5, -4], [7, -4], [6, -3], [5, -2], [7, -2]]) P(rx + a, ry + b, C.k);
+    for (let i = 0; i < 3; i++) { const a = t * 7 + i * 2.09; const sx = Math.round(rx + 4 + Math.cos(a) * 8), sy = Math.round(ry - 10 + Math.sin(a) * 3); P(sx, sy, C.yel); P(sx - 1, sy, C.sunD); P(sx + 1, sy, C.sunD); P(sx, sy - 1, C.sunD); P(sx, sy + 1, C.sunD); }
+  }
+  if (t > hit && t < hit + 0.45) { const k = Math.floor((t - hit) * 16); for (let i = 0; i < 8; i++) { const a = i * 0.785, r1 = 3 + k, r2 = 6 + k; line(92 + Math.cos(a) * r1, 60 + Math.sin(a) * r1, 92 + Math.cos(a) * r2, 60 + Math.sin(a) * r2, i % 2 ? C.yel : C.white); } }
+  L.restore();
+  if (t > hit && t < hit + 1.0) say('咚！', 372, 120, 40, C.yel);
+}
+function sceneLucky(t) {
+  L.save(); L.scale(2, 2);
+  sky(C.sky1, C.sky2, 0, 48, 6); cloud(22, 12, 0.7); cloud(130, 18, 0.8);
+  hills(50, C.hill1, C.hill2); meadow(-4, 48, 90, 31); R(0, 48, 170, 1, C.grassD);
+  stump(126, 68, 20, 11);
+  hoeOnGround(24, 68);
+  const jy = -Math.round(Math.abs(Math.sin((t - 4.6) * Math.PI * 2.6)) * 7);
+  sprite(farmer('jump'), 76, 68 + jy);
+  sprite(rabbit('daze'), 76, 45 + jy);
+  for (const [a, b] of [[4, -8], [6, -8], [5, -7], [4, -6], [6, -6]]) P(76 + a, 45 + jy + b, C.k);
+  const r = mulberry32(Math.floor(t * 8));
+  for (let i = 0; i < 6; i++) { const sx = 50 + Math.floor(r() * 54), sy = 20 + Math.floor(r() * 34); P(sx, sy, C.yel); if (r() < 0.6) { P(sx - 1, sy, C.white); P(sx + 1, sy, C.white); P(sx, sy - 1, C.white); P(sx, sy + 1, C.white); } }
+  R(94, 24 + jy, 3, 7, C.k); R(95, 25 + jy, 1, 5, C.red); R(94, 32 + jy, 3, 3, C.k); P(95, 33 + jy, C.red);
+  L.restore();
+}
+function sceneModern(t) {
+  L.save(); L.scale(2, 2);
+  R(0, 0, 160, 58, C.wall); for (let y = 4; y < 56; y += 8) for (let x = (y / 8 | 0) % 2 * 5; x < 160; x += 10) P(x, y, C.wallD);
+  // window with night city
+  R(8, 14, 46, 34, C.k); R(9, 15, 44, 32, C.win);
+  const r = mulberry32(42);
+  for (let b = 0; b < 6; b++) { const bx = 9 + b * 7 + (b > 2 ? 1 : 0), bh = 10 + Math.floor(r() * 18); R(bx, 47 - bh, 6, bh, C.city); for (let wy = 47 - bh + 2; wy < 46; wy += 3) for (let wx = bx + 1; wx < bx + 6; wx += 2) if (r() < 0.45) P(wx, wy, C.winL); }
+  disc(45, 21, 3, C.moon);
+  R(30, 15, 1, 32, C.k); R(9, 30, 44, 1, C.k);
+  // clock spinning fast
+  disc(68, 14, 7, C.k); disc(68, 14, 6, '#e8e6d8');
+  for (let i = 0; i < 12; i += 3) P(68 + Math.round(Math.cos(i * 0.5236) * 5), 14 + Math.round(Math.sin(i * 0.5236) * 5), C.k);
+  const am = (t - 9) * 9, ah = am / 12;
+  line(68, 14, 68 + Math.cos(am - 1.57) * 5, 14 + Math.sin(am - 1.57) * 5, C.red);
+  line(68, 14, 68 + Math.cos(ah - 1.57) * 3, 14 + Math.sin(ah - 1.57) * 3, C.k);
+  // floor
+  R(0, 58, 160, 32, C.floor); for (let y = 62; y < 90; y += 5) R(0, y, 160, 1, C.floorD);
+  // stump-shaped stool (callback)
+  stump(84, 69, 18, 10);
+  const fx = 86, fy = 58, bob = Math.floor(t * 2) % 2;
+  sprite([
+    { r: [-8, -1, 11, 4], c: 'jeans' }, { r: [-9, 2, 3, 8], c: 'jeans' }, { r: [-12, 9, 6, 2], c: '#e8e8e8' },
+    { r: [-4, -17, 10, 17], c: 'hood' }, { r: [2, -17, 4, 17], c: 'hoodD', no: 1 },
+    { r: [-6, -24 + bob, 9, 8], c: 'skin' }, { r: [-6, -25 + bob, 10, 4], c: '#2a1d18' }, { r: [1, -25 + bob, 4, 8], c: '#2a1d18', no: 1 },
+    { r: [-11, -12, 9, 3], c: 'hood' }, { r: [-14, -14, 3, 4], c: 'skin' },
+  ], fx, fy);
+  R(fx - 19, fy - 20, 5, 8, C.k); R(fx - 18, fy - 19, 3, 6, C.scr);
+  L.fillStyle = 'rgba(89,214,234,0.25)'; L.fillRect(fx - 24, fy - 27, 16, 20);
+  P(fx - 5, fy - 20 + bob, C.k);
+  // thought trail
+  P(fx + 4, fy - 30, C.white); R(fx + 8, fy - 34, 2, 2, C.white); R(fx + 13, fy - 38, 3, 2, C.white);
+  // phone screen popup: flat line, zero likes
+  R(116, 24, 34, 42, C.k); R(117, 25, 32, 40, '#20222c'); R(119, 28, 28, 34, '#0f2a33');
+  R(121, 31, 24, 14, '#173d49'); line(122, 43, 144, 43, C.glow); line(122, 42, 125, 42, C.glow);
+  R(128, 50, 2, 2, C.red); R(131, 50, 2, 2, C.red); R(128, 52, 5, 1, C.red); R(129, 53, 3, 1, C.red); P(130, 54, C.red);
+  P(137, 50, C.white); P(138, 50, C.white); P(136, 51, C.white); P(139, 51, C.white); P(136, 52, C.white); P(139, 52, C.white); P(136, 53, C.white); P(139, 53, C.white); P(137, 54, C.white); P(138, 54, C.white);
+  L.restore();
+}
+window.__info = { fps: FPS, duration: DUR, frames: Math.round(FPS * DUR) };
+window.__render = t => {
+  L.imageSmoothingEnabled = false; T.clearRect(0, 0, 640, 360);
+  let seg;
+  if (t < 2.4) {
+    seg = 'plough'; sceneFarm(t, 'plough');
+    say('守株待兔', 320, 74, 64, C.yel);
+    say('《韩非子·五蠹》', 320, 122, 22, C.white);
+    captionBox('宋国有个农夫，天天下地耕田', typed(t, 0.5));
+  } else if (t < 4.6) {
+    seg = 'rabbit'; sceneRabbit(t);
+    captionBox('一只兔子狂奔，一头撞上树桩', typed(t, 2.5));
+  } else if (t < 6.2) {
+    seg = 'lucky'; sceneLucky(t);
+    say('白捡一只兔子！', 320, 60, 44, C.yel);
+    captionBox('他乐坏了：这买卖真划算', typed(t, 4.7));
+  } else if (t < 9.0) {
+    seg = 'wait'; sceneFarm(t, 'wait');
+    if (t < 7.6) captionBox('从此扔下锄头，天天守着树桩', typed(t, 6.25));
+    else captionBox('田里长满荒草，兔子再没来过', typed(t, 7.6));
+    say('一天，又一天……', 320, 40, 28, C.white);
+  } else {
+    seg = 'now'; sceneModern(t);
+    say('两千多年后', 124, 34, 24, C.yel);
+    if (t > 9.3) say('下一个爆款，快来吧……', 448, 58, 22, C.scr);
+    if (t < 10.3) captionBox('他守着手机，等爆款自己撞上来', typed(t, 9.1));
+    else {
+      const k = clamp((t - 10.3) / 0.35);
+      R(0, 138, 320, 36, C.k); R(0, 139, 320, 34, '#1b1733'); R(0, 139, 320, 1, C.yel); R(0, 172, 320, 1, C.yel);
+      const s = [...'偶然撞上的好运，不会自己重复'].slice(0, Math.ceil(14 * k)).join('');
+      if (s) { const g = glyphs(s, 30, C.yel, C.k); T.drawImage(g, 320 - glyphs('偶然撞上的好运，不会自己重复', 30, C.yel, C.k).width / 2, 312 - g.height / 2); }
+    }
+  }
+  return { seg: 'pixel', tau: t.toFixed(2), part: seg };
+};
+document.fonts.load(`900 40px "Noto Sans CJK SC"`).then(() => document.fonts.load(`700 22px "Noto Sans CJK SC"`)).then(() => document.fonts.ready).then(() => { window.__render(0); window.__ready = true; });
+</script>
+</body>
+</html>

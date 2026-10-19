@@ -1,0 +1,10 @@
+{
+  "name": "code-video-skill",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Agent skill: LLM-written, frame-by-frame code-rendered explainer videos",
+  "license": "MIT",
+  "dependencies": {
+    "playwright-core": "^1.64.0"
+  }
+}

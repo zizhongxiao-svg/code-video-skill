@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin:0; width:1920px; height:1080px; overflow:hidden; background:#07060a;
+    font-family:"Noto Sans CJK SC",sans-serif; -webkit-font-smoothing:antialiased; }
+  #c { position:absolute; left:0; top:0; width:1920px; height:1080px; }
+  #ui { position:absolute; inset:0; color:#f1e6d2; }
+  #head { position:absolute; left:96px; top:70px; font-family:"Noto Serif CJK SC",serif; font-size:44px; font-weight:600; letter-spacing:4px; color:#e9dcc4; text-shadow:0 2px 14px rgba(0,0,0,.8); }
+  #nodes { position:absolute; right:96px; top:52px; display:flex; gap:26px; }
+  .node { width:118px; text-align:center; }
+  .node canvas { width:96px; height:96px; display:block; margin:0 auto; border-radius:50%; border:1.5px solid rgba(241,230,210,.25); background:rgba(10,8,8,.45); }
+  .node div { font-size:30px; margin-top:6px; color:#cdbfa8; letter-spacing:2px; }
+  .stage { position:absolute; left:96px; bottom:150px; width:900px; text-shadow:0 3px 18px rgba(0,0,0,.85); }
+  .stage .n { font-family:"Noto Serif CJK SC",serif; font-size:136px; font-weight:900; letter-spacing:12px; line-height:1.05; color:#f6ead4; }
+  .stage .e { font-size:46px; font-weight:500; color:#f0a952; margin-top:18px; letter-spacing:2px; }
+  .stage .d { font-size:38px; color:#d8cbb4; margin-top:14px; }
+  #foot { position:absolute; left:96px; bottom:28px; font-size:22px; color:rgba(200,190,175,.45); }
+</style>
+<script type="importmap">{ "imports": { "three": "./vendor/three.module.js", "three/addons/": "./vendor/jsm/" } }</script>
+</head>
+<body>
+<canvas id="c" width="1920" height="1080"></canvas>
+<div id="ui">
+  <div id="head">「日」字怎么变成今天的样子</div>
+  <div id="nodes"></div>
+  <div id="stages"></div>
+  <div id="foot">汉字演变（WebGL 电影感）demo · 代码逐帧渲染</div>
+</div>
+<script>
+const FPS = 30, DUR = 12;
+window.__info = { fps: FPS, duration: DUR, frames: Math.round(FPS * DUR) };
+</script>
+<script type="module" src="./scene.js"></script>
+</body>
+</html>

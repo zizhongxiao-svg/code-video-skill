@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin:0; width:1920px; height:1080px; overflow:hidden; background:#0b1322; }
+  canvas { display:block; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1920" height="1080"></canvas>
+<script>
+const FPS = 30, DUR = 12;
+const W = 1920, H = 1080;
+const cv = document.getElementById('c'), g = cv.getContext('2d');
+const SANS = '"Noto Sans CJK SC", sans-serif', MONO = '"Noto Sans Mono CJK SC", monospace';
+const clamp = (x, a = 0, b = 1) => Math.max(a, Math.min(b, x));
+const lerp = (a, b, k) => a + (b - a) * k;
+const ease = x => { x = clamp(x); return x < .5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2; };
+const prog = (t, a, b) => ease((t - a) / (b - a));
+const back = x => { x = clamp(x); const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2); };
+const pop = (t, a, d = 0.45) => back((t - a) / d);
+
+const C = { sky0: '#0a1220', sky1: '#183049', earth: '#1b1f27', earthLine: '#3b4554', sea0: '#11799a', sea1: '#03132a',
+  ink: '#eef3f8', dim: '#8a97a8', amber: '#ffc23d', cyan: '#6fdcff', rust: '#d27a4a' };
+
+// ---- world (meters). final view scale S_F, x positions defined by final screen column ----
+const S_F = 960 / 21900;
+const wx = sx => (sx - 960) / S_F;
+const EV_H = 8848.86, EV_HW = 0.68 * EV_H, DEEP = 10935, TIT = 3800, BURJ = 828, PERSON = 1.7, CRUISE = 10000;
+const BURJ_X = wx(470), PERSON_X = BURJ_X - 260, EV_X = wx(820), TIT_X = wx(1250), DEEP_X = wx(1570);
+const COAST = [[1110, 0], [1165, -2500], [1190, -TIT], [1310, -TIT], [1360, -5400], [1552, -DEEP], [1588, -DEEP], [1760, -6200], [1920, -5800], [2600, -5600], [60000, -5600]]
+  .map(([sx, d]) => [wx(sx), d]);
+const PL0 = -16884, PLV = 3096;
+
+// camera keyframes: s = px per meter, (cx, cy) = world point at screen center
+const K = [
+  { s: 224, cx: PERSON_X + (960 - 820) / 224, cy: (800 - 540) / 224 },
+  { s: 0.68, cx: BURJ_X + 60 / 0.68, cy: (870 - 540) / 0.68 },
+  { s: 0.08, cx: -4300, cy: 5250 },
+  { s: S_F, cx: 0, cy: (514.7 - 540) / S_F },
+];
+const SEG = [[0.5, 2.6, 0], [3.0, 5.0, 1], [5.4, 7.6, 2]];
+function camera(t) {
+  let k = K[0];
+  for (const [a, b, i] of SEG) {
+    if (t < a) return { ...k };
+    const k0 = K[i], k1 = K[i + 1];
+    if (t >= b) { k = k1; continue; }
+    const e = ease((t - a) / (b - a));
+    const s = Math.exp(lerp(Math.log(k0.s), Math.log(k1.s), e));
+    const w = (1 / s - 1 / k0.s) / (1 / k1.s - 1 / k0.s);
+    return { s, cx: lerp(k0.cx, k1.cx, w), cy: lerp(k0.cy, k1.cy, w) };
+  }
+  return { ...k };
+}
+let cam;
+const LIM = 2e5;
+const X = x => clamp(960 + (x - cam.cx) * cam.s, -LIM, LIM);
+const Y = y => clamp(540 - (y - cam.cy) * cam.s, -LIM, LIM);
+
+const fmtInt = n => Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+function fmtTick(p) {
+  const a = Math.abs(p), sg = p < 0 ? '−' : '';
+  if (a === 0) return '0 m';
+  if (a >= 1000) return sg + (+(a / 1000).toFixed(2)) + ' km';
+  return sg + (+a.toFixed(2)) + ' m';
+}
+
+// ---- drawing helpers ----
+function poly(pts, close = true) { g.beginPath(); pts.forEach(([x, y], i) => i ? g.lineTo(x, y) : g.moveTo(x, y)); if (close) g.closePath(); }
+function rr(x, y, w, h, r) { g.beginPath(); g.roundRect(x, y, w, h, r); }
+
+const EV_PROF = [[-1, 0], [-.82, .1], [-.7, .16], [-.58, .27], [-.47, .33], [-.38, .45], [-.3, .5], [-.22, .62], [-.14, .7], [-.07, .84], [0, 1],
+  [.05, .93], [.1, .88], [.16, .9], [.22, .8], [.3, .72], [.38, .6], [.48, .52], [.58, .4], [.7, .3], [.84, .15], [1, 0]];
+function everestPts(cxW, baseW) { return EV_PROF.map(([u, v]) => [X(cxW + u * EV_HW), Y(baseW + v * EV_H)]); }
+function drawEverest(cxW, baseW, alpha, outline) {
+  const pts = everestPts(cxW, baseW);
+  g.save(); g.globalAlpha = alpha;
+  poly(pts);
+  const gr = g.createLinearGradient(0, Y(baseW + EV_H), 0, Y(baseW));
+  gr.addColorStop(0, '#7f8fa6'); gr.addColorStop(1, '#3b4658');
+  g.fillStyle = gr; g.fill();
+  g.save(); poly(pts); g.clip();
+  // snow cap
+  const sn = [[-.6, .62], [-.45, .58], [-.36, .66], [-.26, .6], [-.18, .7], [-.08, .64], [0, .72], [.08, .66], [.16, .74], [.26, .62], [.36, .67], [.5, .58], [.6, .63], [.6, 1.1], [-.6, 1.1]];
+  poly(sn.map(([u, v]) => [X(cxW + u * EV_HW), Y(baseW + v * EV_H)]));
+  g.fillStyle = '#e9f0f7'; g.fill();
+  // shaded right face (over rock and snow)
+  poly([[0, 1], [.04, .8], [.09, .6], [.13, .38], [.16, .18], [.2, 0], [1.2, 0], [1.2, 1.2], [0, 1.2]].map(([u, v]) => [X(cxW + u * EV_HW), Y(baseW + v * EV_H)]));
+  g.fillStyle = 'rgba(12,22,40,0.34)'; g.fill();
+  g.restore();
+  if (outline) { poly(pts); g.strokeStyle = outline; g.lineWidth = 3; g.setLineDash([12, 9]); g.stroke(); g.setLineDash([]); }
+  g.restore();
+}
+function drawGhost(cxW, alpha) {
+  if (alpha <= 0) return;
+  g.save(); g.globalAlpha = alpha; poly(everestPts(cxW, 0));
+  g.fillStyle = 'rgba(111,220,255,0.05)'; g.fill();
+  g.strokeStyle = 'rgba(238,243,248,0.55)'; g.lineWidth = 2.5; g.setLineDash([10, 10]); g.stroke(); g.setLineDash([]); g.restore();
+}
+const BURJ_T = [[0, .072], [.16, .072], [.16, .06], [.32, .06], [.32, .048], [.46, .048], [.46, .038], [.58, .038], [.58, .029], [.68, .029], [.68, .02], [.77, .02], [.77, .012], [.85, .012], [.85, .004], [1, .0015]];
+function drawBurj() {
+  const L = BURJ_T.map(([v, w]) => [X(BURJ_X - w * BURJ), Y(v * BURJ)]);
+  const R = BURJ_T.map(([v, w]) => [X(BURJ_X + w * BURJ), Y(v * BURJ)]).reverse();
+  poly(L.concat(R)); g.fillStyle = '#c9d4e1'; g.fill();
+  poly(BURJ_T.map(([v, w]) => [X(BURJ_X + w * BURJ), Y(v * BURJ)]).concat([[X(BURJ_X), Y(BURJ)], [X(BURJ_X), Y(0)]]));
+  g.fillStyle = '#7d8ba0'; g.fill();
+  if (cam.s > 0.2) { // floor bands
+    g.strokeStyle = 'rgba(20,30,45,0.25)'; g.lineWidth = 1;
+    for (let v = 0.02; v < .85; v += 0.02) { const w = BURJ_T.reduce((a, [vv, ww]) => vv <= v ? ww : a, .072); g.beginPath(); g.moveTo(X(BURJ_X - w * BURJ), Y(v * BURJ)); g.lineTo(X(BURJ_X + w * BURJ), Y(v * BURJ)); g.stroke(); }
+  }
+}
+function drawPerson() {
+  const px = PERSON_X, s = cam.s;
+  if (PERSON * s < 4) { g.fillStyle = C.ink; g.beginPath(); g.arc(X(px), Y(0) - 3, 3, 0, 7); g.fill(); return; }
+  g.fillStyle = C.ink;
+  g.beginPath(); g.arc(X(px), Y(1.585), 0.115 * s, 0, 7); g.fill();
+  rr(X(px - 0.2), Y(1.43), 0.4 * s, 0.6 * s, 0.12 * s); g.fill();
+  rr(X(px - 0.17), Y(0.9), 0.15 * s, 0.9 * s, 0.07 * s); g.fill();
+  rr(X(px + 0.02), Y(0.9), 0.15 * s, 0.9 * s, 0.07 * s); g.fill();
+  g.save(); g.translate(X(px - 0.2), Y(1.4)); g.rotate(0.12); rr(-0.11 * s, 0, 0.1 * s, 0.62 * s, 0.05 * s); g.fill(); g.restore();
+  g.save(); g.translate(X(px + 0.2), Y(1.4)); g.rotate(-0.12); rr(0.01 * s, 0, 0.1 * s, 0.62 * s, 0.05 * s); g.fill(); g.restore();
+}
+function drawTitanic() {
+  const len = Math.max(269 * cam.s, 96), u = len / 269;
+  const x0 = X(TIT_X), y0 = Y(-TIT);
+  g.save(); g.translate(x0, y0); g.fillStyle = C.rust;
+  // bow section (tilted, resting) and stern section apart
+  g.save(); g.translate(-len * 0.25, 0); g.rotate(-0.06);
+  poly([[-58 * u, -2], [-62 * u, -24 * u], [70 * u, -24 * u], [62 * u, -2]]); g.fill();
+  g.fillStyle = '#e6d2b8'; rr(-40 * u, -34 * u, 70 * u, 10 * u, 2 * u); g.fill();
+  g.fillStyle = '#c2803f'; rr(-20 * u, -52 * u, 11 * u, 18 * u, 2 * u); g.fill(); rr(4 * u, -52 * u, 11 * u, 18 * u, 2 * u); g.fill();
+  g.restore();
+  g.fillStyle = C.rust;
+  g.save(); g.translate(len * 0.32, 0); g.rotate(0.1);
+  poly([[-38 * u, -2], [-44 * u, -20 * u], [40 * u, -20 * u], [50 * u, -8 * u], [44 * u, -2]]); g.fill();
+  g.restore();
+  g.restore();
+}
+function drawPlane(x, y, a) {
+  g.save(); g.globalAlpha = a; g.translate(x, y); g.fillStyle = C.ink;
+  rr(-46, -7, 92, 14, 7); g.fill();
+  poly([[-6, -4], [16, -4], [-12, -34], [-24, -34]]); g.fill();
+  poly([[-6, 4], [16, 4], [-12, 34], [-24, 34]]); g.fill();
+  poly([[-46, -4], [-34, -4], [-44, -20], [-52, -20]]); g.fill();
+  g.restore();
+}
+function label(ax, ay, bx, by, name, val, col, a, align = 'right', mono = 44) {
+  if (a <= 0.001) return;
+  g.save(); g.globalAlpha = clamp(a);
+  g.font = `700 38px ${SANS}`; const w1 = g.measureText(name).width;
+  g.font = `700 ${mono}px ${MONO}`; const w2 = g.measureText(val).width;
+  const bw = Math.max(w1, w2) + 36, bh = 112;
+  const x = align === 'right' ? bx - bw : bx, y = by - bh / 2;
+  g.strokeStyle = 'rgba(238,243,248,0.7)'; g.lineWidth = 2;
+  g.beginPath(); g.moveTo(ax, ay); g.lineTo(align === 'right' ? bx : bx, by); g.stroke();
+  g.fillStyle = C.ink; g.beginPath(); g.arc(ax, ay, 6, 0, 7); g.fill();
+  const sc = lerp(0.85, 1, clamp(a));
+  g.translate(x + bw / 2, by); g.scale(sc, sc); g.translate(-(x + bw / 2), -by);
+  rr(x, y, bw, bh, 14); g.fillStyle = 'rgba(8,14,26,0.78)'; g.fill();
+  g.fillStyle = col; rr(align === 'right' ? x + bw - 6 : x, y, 6, bh, 3); g.fill();
+  g.textBaseline = 'alphabetic'; g.textAlign = 'left';
+  g.fillStyle = C.ink; g.font = `700 38px ${SANS}`; g.fillText(name, x + 18, y + 44);
+  g.fillStyle = col; g.font = `700 ${mono}px ${MONO}`; g.fillText(val, x + 18, y + 96);
+  g.restore();
+}
+function lineLabel(x, y, text, val, col, a) {
+  if (a <= 0.001) return;
+  g.save(); g.globalAlpha = clamp(a); g.textBaseline = 'middle';
+  g.font = `700 36px ${SANS}`; const w1 = g.measureText(text).width;
+  g.font = `700 40px ${MONO}`; const w2 = g.measureText(val).width;
+  const bw = w1 + w2 + 54;
+  rr(x, y - 32, bw, 64, 14); g.fillStyle = 'rgba(8,14,26,0.78)'; g.fill();
+  g.fillStyle = C.ink; g.font = `700 36px ${SANS}`; g.fillText(text, x + 20, y + 2);
+  g.fillStyle = col; g.font = `700 40px ${MONO}`; g.fillText(val, x + 34 + w1, y + 2);
+  g.restore();
+  return bw;
+}
+
+// ---- ruler ----
+const LEVELS = []; for (let e = -1; e <= 5; e++) { LEVELS.push(Math.pow(10, e)); LEVELS.push(5 * Math.pow(10, e)); }
+function ruler() {
+  g.save(); rulerBody(); g.restore();
+}
+function rulerBody() {
+  const RW = 150, s = cam.s;
+  g.fillStyle = 'rgba(6,10,18,0.72)'; g.fillRect(0, 0, RW, H);
+  g.fillStyle = 'rgba(238,243,248,0.25)'; g.fillRect(RW - 2, 0, 2, H);
+  const yTop = cam.cy + 540 / s, yBot = cam.cy - 540 / s;
+  const fine = LEVELS.find(c => c * s >= 10) || LEVELS[LEVELS.length - 1];
+  const lvl = p => { let best = fine; for (const c of LEVELS) if (c >= fine && Math.abs(p - Math.round(p / c) * c) < fine * 1e-3) best = c; return best; };
+  g.textAlign = 'right'; g.textBaseline = 'middle'; g.font = `500 28px ${MONO}`;
+  for (let p = Math.ceil(yBot / fine) * fine; p <= yTop; p += fine) {
+    const q = Math.round(p / fine) * fine, c = lvl(q), sp = c * s, y = Y(q);
+    const ta = clamp((sp - 10) / 30), la = clamp((sp - 70) / 40);
+    const len = 10 + 22 * clamp((sp - 40) / 80);
+    g.strokeStyle = `rgba(238,243,248,${0.75 * ta})`; g.lineWidth = 2;
+    g.beginPath(); g.moveTo(RW - len, y); g.lineTo(RW, y); g.stroke();
+    if (la > 0) {
+      g.strokeStyle = `rgba(238,243,248,${0.06 * la})`; g.lineWidth = 1.5;
+      g.beginPath(); g.moveTo(RW, y); g.lineTo(W, y); g.stroke();
+      g.fillStyle = q === 0 ? C.amber : `rgba(238,243,248,${0.85 * la})`;
+      g.fillText(fmtTick(q), RW - 40, y);
+    }
+  }
+  const y0 = Y(0);
+  if (y0 > -20 && y0 < H + 20) { g.fillStyle = C.amber; g.beginPath(); g.moveTo(RW, y0); g.lineTo(RW + 16, y0 - 10); g.lineTo(RW + 16, y0 + 10); g.fill(); }
+}
+
+window.__info = { fps: FPS, duration: DUR, frames: Math.round(FPS * DUR) };
+window.__render = t => {
+  cam = camera(t);
+  const s = cam.s;
+  // sky
+  const sk = g.createLinearGradient(0, 0, 0, H); sk.addColorStop(0, C.sky0); sk.addColorStop(1, C.sky1);
+  g.fillStyle = sk; g.fillRect(0, 0, W, H);
+
+  // ocean (only right of the coast)
+  const sea = COAST.map(([x, y]) => [X(x), Y(y)]);
+  poly([[X(COAST[0][0]), Y(0)], [LIM, Y(0)], [LIM, sea[sea.length - 1][1]], ...sea.slice().reverse()]);
+  const sg = g.createLinearGradient(0, Y(0), 0, Y(-11000)); sg.addColorStop(0, C.sea0); sg.addColorStop(1, C.sea1);
+  g.fillStyle = sg; g.fill();
+  // earth: land at sea level, then seabed
+  poly([[-LIM, Y(0)], ...sea, [LIM, LIM], [-LIM, LIM]]);
+  g.fillStyle = C.earth; g.fill();
+  poly([[-LIM, Y(0)], ...sea], false); g.strokeStyle = C.earthLine; g.lineWidth = 3; g.stroke();
+  // sea surface
+  g.strokeStyle = 'rgba(111,220,255,0.85)'; g.lineWidth = 3;
+  g.beginPath(); g.moveTo(X(COAST[0][0]), Y(0)); g.lineTo(W + 10, Y(0)); g.stroke();
+
+  // cruise altitude line + plane
+  const plA = prog(t, 3.8, 4.6);
+  const plX = X(PL0 + PLV * (t - 3.6)), plY = Y(CRUISE);
+  if (plA > 0 && plY > -40) {
+    g.save(); g.globalAlpha = plA; g.strokeStyle = 'rgba(238,243,248,0.45)'; g.lineWidth = 2; g.setLineDash([14, 12]);
+    g.beginPath(); g.moveTo(150, plY); g.lineTo(W, plY); g.stroke(); g.setLineDash([]); g.restore();
+    drawPlane(plX, plY, plA);
+  }
+
+  // objects
+  const mv = prog(t, 7.9, 9.7);
+  drawGhost(EV_X, prog(t, 7.9, 8.4));
+  if (mv <= 0) drawEverest(EV_X, 0, 1);
+  drawBurj();
+  drawPerson();
+  drawTitanic();
+  // challenger deep marker
+  if (t > 6) {
+    const a = prog(t, 6.6, 7.2), x = X(DEEP_X), y = Y(-DEEP);
+    g.save(); g.globalAlpha = a; g.fillStyle = C.cyan;
+    g.beginPath(); g.moveTo(x, y - 4); g.lineTo(x - 14, y - 28); g.lineTo(x + 14, y - 28); g.fill(); g.restore();
+  }
+  if (mv > 0) {
+    const cx = lerp(EV_X, DEEP_X, mv), base = lerp(0, -DEEP, mv) + 3200 * Math.sin(Math.PI * mv);
+    drawEverest(cx, base, 0.88, 'rgba(255,194,61,0.9)');
+  }
+
+  ruler();
+
+  // labels
+  const pa = pop(t, 0.25), ba = pop(t, 2.1), ea = pop(t, 4.3), qa = pop(t, 4.7), ta = pop(t, 6.4), da = pop(t, 7.0);
+  label(X(PERSON_X), Y(PERSON) - 6, X(PERSON_X) - 60, Y(PERSON) - 90, '人', '1.7 m', C.amber, pa);
+  label(X(BURJ_X), Y(BURJ) - 6, X(BURJ_X) - 70, Y(BURJ) - 180, '哈利法塔', '828 m', C.amber, ba);
+  label(X(EV_X), Y(EV_H) - 4, X(EV_X) - 60, Y(EV_H) + 60, '珠穆朗玛峰', '8 848.86 m', C.amber, ea);
+  if (qa > 0) lineLabel(plX + 70, plY, '民航巡航', '≈ 10 000 m', C.amber, qa);
+  label(X(TIT_X) - 10, Y(-TIT) + 4, X(TIT_X) - 70, Y(-TIT) + 130, '泰坦尼克号残骸', '−3 800 m', C.cyan, ta);
+  if (da > 0) {
+    const x = X(DEEP_X), y = Y(-DEEP);
+    g.save(); g.globalAlpha = clamp(da); g.strokeStyle = 'rgba(238,243,248,0.7)'; g.lineWidth = 2;
+    g.beginPath(); g.moveTo(x, y + 2); g.lineTo(x, y + 18); g.stroke(); g.restore();
+    lineLabel(x - 230, Math.min(y + 50, 1032), '挑战者深渊', '−10 935 m', C.cyan, da);
+  }
+  // sea level tag
+  const sa = prog(t, 5.8, 6.4);
+  if (sa > 0) {
+    g.save(); g.globalAlpha = sa; g.font = `700 32px ${SANS}`; g.textAlign = 'right'; g.textBaseline = 'bottom';
+    g.fillStyle = C.cyan; g.fillText('海平面 0 m', W - 40, Y(0) - 12); g.restore();
+  }
+
+  // ending: bracket from peak to sea level
+  const br = prog(t, 9.7, 10.3);
+  if (br > 0) {
+    const peakY = Y(-DEEP + EV_H), y0 = Y(0), bx = X(DEEP_X) + 110;
+    g.save(); g.strokeStyle = C.amber; g.lineWidth = 4;
+    const yy = lerp(y0, peakY, br);
+    g.beginPath(); g.moveTo(bx - 14, y0); g.lineTo(bx, y0); g.lineTo(bx, yy); g.lineTo(bx - 14, yy); g.stroke();
+    g.setLineDash([6, 8]); g.lineWidth = 2; g.beginPath(); g.moveTo(X(DEEP_X) + 6, peakY); g.lineTo(bx - 14, peakY); g.stroke(); g.setLineDash([]);
+    g.globalAlpha = br; g.textBaseline = 'middle'; g.textAlign = 'left';
+    g.font = `700 44px ${MONO}`; g.fillStyle = C.amber; g.fillText('2 086 m', bx + 18, (y0 + peakY) / 2 + 2);
+    g.restore();
+  }
+  const ca = prog(t, 10.2, 10.8), cb = prog(t, 10.6, 11.2);
+  if (ca > 0) {
+    g.save(); g.textAlign = 'left'; g.textBaseline = 'alphabetic';
+    const x0 = 1170;
+    g.globalAlpha = ca; g.translate(0, (1 - ca) * 20);
+    g.font = `900 54px ${SANS}`; g.fillStyle = C.ink; g.fillText('把珠峰放进海沟，', x0, 250);
+    g.fillText('峰顶离海面还有约', x0, 324);
+    const w = g.measureText('峰顶离海面还有约').width;
+    g.font = `700 72px ${MONO}`; g.fillStyle = C.amber; g.fillText('2', x0 + w + 12, 328);
+    const w2 = g.measureText('2').width;
+    g.font = `900 54px ${SANS}`; g.fillText('公里', x0 + w + 24 + w2, 324);
+    g.globalAlpha = cb; g.font = `500 34px ${MONO}`; g.fillStyle = C.dim;
+    g.fillText('10 935 − 8 848.86 ≈ 2 086 m', x0, 390);
+    g.restore();
+  }
+
+  // title + scale readout
+  const tA = 1 - prog(t, 3.6, 4.2);
+  if (tA > 0) {
+    g.save(); g.globalAlpha = tA * prog(t, 0, 0.4); g.textBaseline = 'alphabetic';
+    g.font = `900 56px ${SANS}`; g.fillStyle = C.ink; g.fillText('马里亚纳海沟有多深？', 190, 100);
+    g.font = `500 32px ${SANS}`; g.fillStyle = C.dim; g.fillText('所有物体按同一比例尺摆放', 192, 150);
+    g.restore();
+  }
+  const mpp = 1 / s;
+  const rd = mpp < 1 ? `${(mpp * 1000).toFixed(1)} 毫米` : mpp < 10 ? `${mpp.toFixed(1)} 米` : `${Math.round(mpp)} 米`;
+  g.save(); g.textBaseline = 'alphabetic'; g.font = `500 30px ${MONO}`; g.fillStyle = 'rgba(238,243,248,0.8)';
+  g.fillText(`1 像素 = ${rd}`, 190, 1000); g.restore();
+
+  g.save(); g.font = `400 22px ${SANS}`; g.fillStyle = 'rgba(238,243,248,0.38)'; g.textBaseline = 'alphabetic';
+  g.fillText('比例尺对比 demo · 代码逐帧渲染', 190, 1056); g.restore();
+  return { seg: 'scale', tau: t.toFixed(2) };
+};
+Promise.all([`700 38px ${SANS}`, `900 54px ${SANS}`, `500 30px ${MONO}`, `700 44px ${MONO}`, `400 22px ${SANS}`].map(f => document.fonts.load(f)))
+  .then(() => document.fonts.ready).then(() => { window.__render(0); window.__ready = true; });
+</script>
+</body>
+</html>

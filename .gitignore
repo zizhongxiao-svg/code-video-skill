@@ -1,0 +1,11 @@
+node_modules/
+package-lock.json
+_preview/
+_frames/
+*.mp4
+*.wav
+*.mp3
+*.srt
+examples/*/vendor/
+templates/*/vendor/
+__pycache__/

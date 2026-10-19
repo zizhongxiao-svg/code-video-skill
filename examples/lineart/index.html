@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin:0; width:1920px; height:1080px; overflow:hidden; background:#fbfcfd; }
+  svg { display:block; }
+  .ink { fill:none; stroke:#1f2933; stroke-width:4.5; stroke-linecap:round; stroke-linejoin:round; }
+  .water { fill:none; stroke:#2b7bd6; stroke-width:4.5; stroke-linecap:round; stroke-linejoin:round; }
+  .thin { stroke-width:3; }
+  text { font-family:"Noto Sans CJK SC","Noto Sans CJK TC","PingFang SC",sans-serif; fill:#1f2933; }
+  .label { font-size:40px; font-weight:500; }
+  .num { font-size:30px; font-weight:700; fill:#2b7bd6; }
+</style>
+</head>
+<body>
+<svg id="s" width="1920" height="1080" viewBox="0 0 1920 1080">
+  <g id="title">
+    <text x="120" y="130" style="font-size:64px;font-weight:700">一杯水，怎么变成云？</text>
+    <path class="water" d="M122 160 C 300 150, 520 170, 742 156" data-draw="0.3,1.3"/>
+  </g>
+
+  <g id="sun">
+    <circle class="ink" cx="330" cy="330" r="62" data-draw="1.2,2.0"/>
+    <g data-rays="2.0,2.6">
+      <path class="ink thin" d="M330 238 L330 205"/><path class="ink thin" d="M330 422 L330 455"/>
+      <path class="ink thin" d="M238 330 L205 330"/><path class="ink thin" d="M422 330 L455 330"/>
+      <path class="ink thin" d="M265 265 L242 242"/><path class="ink thin" d="M395 395 L418 418"/>
+      <path class="ink thin" d="M395 265 L418 242"/><path class="ink thin" d="M265 395 L242 418"/>
+    </g>
+  </g>
+
+  <g id="sea">
+    <path class="water" d="M90 860 C 150 830, 210 890, 270 860 S 390 830, 450 860 S 570 890, 630 860 S 750 830, 810 860 S 930 890, 990 860" data-draw="1.6,2.8"/>
+    <path class="water thin" d="M130 930 C 190 905, 250 955, 310 930 S 430 905, 490 930 S 610 955, 670 930 S 790 905, 850 930" data-draw="2.0,3.1"/>
+    <path class="water thin" d="M180 995 C 240 975, 300 1015, 360 995 S 480 975, 540 995 S 660 1015, 720 995" data-draw="2.3,3.3"/>
+  </g>
+
+  <g id="evap"></g>
+
+  <g id="cloud">
+    <path class="ink" d="M1340 360 C 1290 360, 1280 290, 1340 285 C 1345 225, 1430 205, 1465 255 C 1495 200, 1595 205, 1605 270 C 1670 265, 1680 355, 1620 360 Z" data-draw="6.0,7.6"/>
+  </g>
+
+  <g id="rain"></g>
+
+  <g id="mountain">
+    <path class="ink" d="M1180 900 L1390 560 L1480 690 L1590 500 L1830 900" data-draw="8.4,9.8"/>
+    <path class="ink thin" d="M1555 560 L1590 500 L1625 560 L1600 548 L1590 565 L1578 548 Z" data-draw="9.5,10.2"/>
+  </g>
+
+  <g id="river">
+    <path class="water" d="M1450 900 C 1400 940, 1300 950, 1180 935 S 1020 905, 960 900" data-draw="11.0,12.4"/>
+    <path class="water" d="M985 885 L955 900 L985 918" data-draw="12.3,12.7"/>
+  </g>
+
+  <g id="labels"></g>
+
+  <g id="steps"></g>
+  <text id="footer" x="120" y="1050" style="font-size:22px;fill:#8a96a3">线稿动画 demo · 代码逐帧渲染</text>
+</svg>
+<script>
+const FPS = 30, DUR = 15.5;
+const S = document.getElementById('s');
+const NS = 'http://www.w3.org/2000/svg';
+const clamp = (x, a = 0, b = 1) => Math.max(a, Math.min(b, x));
+const ease = x => { x = clamp(x); return x < .5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2; };
+const prog = (t, a, b) => ease((t - a) / (b - a));
+function el(tag, attrs, parent) { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); parent.appendChild(e); return e; }
+
+const draws = [...S.querySelectorAll('[data-draw]')].map(p => {
+  const [a, b] = p.dataset.draw.split(',').map(Number); const L = p.getTotalLength();
+  p.style.strokeDasharray = L; return { p, a, b, L };
+});
+const rays = [...S.querySelector('[data-rays]').children];
+const [ra, rb] = S.querySelector('[data-rays]').dataset.rays.split(',').map(Number);
+
+const evapG = document.getElementById('evap');
+const evap = [430, 610, 790].map((x, i) => el('path', {
+  class: 'water thin', d: `M${x} 800 C ${x - 30} 740, ${x + 30} 700, ${x} 640 S ${x - 30} 560, ${x} 500 S ${x + 30} 450, ${x + 10} 420`,
+  'stroke-dasharray': '18 22', opacity: 0 }, evapG));
+const evapHead = [430, 610, 790].map(x => el('path', { class: 'water thin', d: `M${x - 6} 438 L${x + 10} 418 L${x + 24} 440`, opacity: 0 }, evapG));
+
+const rainG = document.getElementById('rain');
+const drops = [];
+for (let i = 0; i < 14; i++) {
+  const x = 1370 + (i * 37) % 230, phase = (i * 0.37) % 1;
+  drops.push({ e: el('path', { class: 'water thin', d: 'M0 0 L-8 26' }, rainG), x, phase });
+}
+
+const LABELS = [
+  { t: 2.6, x: 490, y: 262, n: '①', s: '太阳把海水晒热' },
+  { t: 4.4, x: 130, y: 650, n: '②', s: '水汽往上飘' },
+  { t: 7.4, x: 1300, y: 175, n: '③', s: '遇冷凝结成云' },
+  { t: 9.8, x: 1010, y: 480, n: '④', s: '云重了，就下雨' },
+  { t: 12.2, x: 1000, y: 1015, n: '⑤', s: '流回大海，一圈走完' },
+];
+const labG = document.getElementById('labels');
+const labs = LABELS.map(L => {
+  const g = el('g', { opacity: 0 }, labG);
+  el('text', { x: L.x, y: L.y, class: 'num' }, g).textContent = L.n;
+  el('text', { x: L.x + 44, y: L.y, class: 'label' }, g).textContent = L.s;
+  return { g, ...L };
+});
+const endCap = el('text', { x: 1500, y: 1015, style: 'font-size:48px;font-weight:700;fill:#2b7bd6', opacity: 0 }, S);
+endCap.textContent = '这就是水循环';
+
+window.__info = { fps: FPS, duration: DUR, frames: Math.round(FPS * DUR) };
+window.__render = t => {
+  for (const d of draws) d.p.style.strokeDashoffset = d.L * (1 - prog(t, d.a, d.b));
+  rays.forEach((r, i) => r.setAttribute('opacity', prog(t, ra + i * 0.06, ra + i * 0.06 + 0.25)));
+  evap.forEach((p, i) => {
+    const on = prog(t, 3.6 + i * 0.3, 4.2 + i * 0.3) * (1 - prog(t, 13.8, 14.6) * 0.6);
+    p.setAttribute('opacity', on); p.style.strokeDashoffset = (t * 60) % 40;
+    evapHead[i].setAttribute('opacity', on);
+  });
+  const rainOn = prog(t, 8.6, 9.2);
+  drops.forEach(d => {
+    const y = 390 + (((t * 1.4 + d.phase) % 1) * 200);
+    d.e.setAttribute('transform', `translate(${d.x - (y - 390) * 0.15} ${y})`);
+    d.e.setAttribute('opacity', rainOn * (y > 540 ? clamp((590 - y) / 50) : 1));
+  });
+  labs.forEach(L => { const k = prog(t, L.t, L.t + 0.5); L.g.setAttribute('opacity', k); L.g.setAttribute('transform', `translate(0 ${(1 - k) * 18})`); });
+  endCap.setAttribute('opacity', prog(t, 13.4, 14.0));
+  return { seg: 'lineart', tau: t.toFixed(2) };
+};
+window.__render(0);
+document.fonts.ready.then(() => { window.__ready = true; });
+</script>
+</body>
+</html>

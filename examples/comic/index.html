@@ -1,0 +1,371 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin:0; width:1920px; height:1080px; overflow:hidden; background:#161616; }
+  canvas { display:block; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1920" height="1080"></canvas>
+<script>
+const FPS = 30, DUR = 11;
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const clamp = (x, a = 0, b = 1) => Math.max(a, Math.min(b, x));
+const ease = x => { x = clamp(x); return x < .5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2; };
+const prog = (t, a, b) => ease((t - a) / (b - a));
+const lerp = (a, b, k) => a + (b - a) * k;
+const back = x => { x = clamp(x); const c1 = 1.9, c3 = c1 + 1; return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2); };
+const pop = (t, a) => t < a ? 0 : back((t - a) / 0.24);
+function mulberry32(a) { return function () { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+
+const RED = '#e3262b', K = '#111', W = '#fff';
+const SANS = '"Noto Sans CJK SC", sans-serif';
+const PAN = {
+  p1: [40, 40, 760, 540], p2: [784, 40, 1290, 540], p3: [1314, 40, 1880, 540],
+  p4: [40, 564, 1150, 964], p5: [1174, 564, 1880, 964], page: [0, 0, 1920, 1004],
+};
+
+// ---------- drawing helpers ----------
+function halftone(x0, y0, x1, y1, tone, sp = 10, col = K, ang = 0.7854) {
+  const ca = Math.cos(ang), sa = Math.sin(ang), cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+  const R = Math.hypot(x1 - x0, y1 - y0) / 2 + sp;
+  const hp = new Path2D();
+  for (let v = -R; v <= R; v += sp) for (let u = -R; u <= R; u += sp) {
+    const x = cx + u * ca - v * sa, y = cy + u * sa + v * ca;
+    if (x < x0 - sp || x > x1 + sp || y < y0 - sp || y > y1 + sp) continue;
+    const tn = typeof tone === 'function' ? tone(x, y) : tone;
+    if (tn <= 0.01) continue;
+    const r = sp * Math.sqrt(clamp(tn, 0, 1.3) / Math.PI);
+    hp.moveTo(x + r, y); hp.arc(x, y, r, 0, 6.2832);
+  }
+  ctx.fillStyle = col; ctx.fill(hp);
+}
+function withClip(pathFn, fn) { ctx.save(); ctx.beginPath(); pathFn(); ctx.clip(); fn(); ctx.restore(); }
+function strokePath(lw, col = K) { ctx.lineWidth = lw; ctx.strokeStyle = col; ctx.lineJoin = 'round'; ctx.lineCap = 'round'; ctx.stroke(); }
+function captionBox(x, y, lines, size, k, align = 'left') {
+  if (k <= 0) return;
+  ctx.font = `900 ${size}px ${SANS}`;
+  const w = Math.max(...lines.map(s => ctx.measureText(s).width)) + size * 0.9, lh = size * 1.28, h = lines.length * lh + size * 0.5;
+  const bx = align === 'right' ? x - w : x;
+  ctx.save(); ctx.translate(bx + w / 2, y + h / 2); ctx.scale(k, k); ctx.translate(-(bx + w / 2), -(y + h / 2));
+  ctx.fillStyle = K; ctx.fillRect(bx + 7, y + 7, w, h);
+  ctx.fillStyle = W; ctx.fillRect(bx, y, w, h); ctx.lineWidth = 4; ctx.strokeStyle = K; ctx.strokeRect(bx, y, w, h);
+  ctx.fillStyle = K; ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+  lines.forEach((s, i) => ctx.fillText(s, bx + size * 0.45, y + size * 0.25 + lh * (i + 0.5)));
+  ctx.restore();
+}
+function bubble(cx, cy, rx, ry, tail, lines, size, k, thought = false) {
+  if (k <= 0) return;
+  ctx.save(); ctx.translate(cx, cy); ctx.scale(k, k); ctx.translate(-cx, -cy);
+  ctx.lineWidth = 5; ctx.strokeStyle = K; ctx.fillStyle = W;
+  if (thought) {
+    tail.forEach(([x, y, r]) => { ctx.beginPath(); ctx.arc(x, y, r, 0, 6.28); ctx.fill(); ctx.stroke(); });
+    ctx.beginPath();
+    const n = 9;
+    for (let i = 0; i < n; i++) { const a = i / n * 6.2832, a2 = (i + 1) / n * 6.2832; const am = (a + a2) / 2;
+      const p1 = [cx + rx * Math.cos(a), cy + ry * Math.sin(a)], p2 = [cx + rx * Math.cos(a2), cy + ry * Math.sin(a2)];
+      if (i === 0) ctx.moveTo(...p1);
+      ctx.quadraticCurveTo(cx + rx * 1.32 * Math.cos(am), cy + ry * 1.32 * Math.sin(am), ...p2); }
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+  } else {
+    ctx.beginPath(); ctx.ellipse(cx, cy, rx, ry, 0, 0, 6.2832); ctx.fill(); ctx.stroke();
+    const [tx, ty, bx1, by1, bx2, by2] = tail;
+    ctx.beginPath(); ctx.moveTo(bx1, by1); ctx.lineTo(tx, ty); ctx.lineTo(bx2, by2); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.ellipse(cx, cy, rx - 2.5, ry - 2.5, 0, 0, 6.2832); ctx.fill();
+  }
+  ctx.fillStyle = K; ctx.font = `900 ${size}px ${SANS}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  const lh = size * 1.25; lines.forEach((s, i) => ctx.fillText(s, cx, cy + (i - (lines.length - 1) / 2) * lh));
+  ctx.restore();
+}
+function focusLines(cx, cy, r0, R, n, seed, alpha = 1) {
+  const r = mulberry32(seed); ctx.fillStyle = `rgba(17,17,17,${alpha})`; ctx.beginPath();
+  for (let i = 0; i < n; i++) {
+    const a = r() * 6.2832, w = 0.004 + r() * 0.012, rr = r0 * (0.85 + r() * 0.5);
+    ctx.moveTo(cx + Math.cos(a) * rr, cy + Math.sin(a) * rr);
+    ctx.lineTo(cx + Math.cos(a - w) * R, cy + Math.sin(a - w) * R); ctx.lineTo(cx + Math.cos(a + w) * R, cy + Math.sin(a + w) * R); ctx.closePath();
+  }
+  ctx.fill();
+}
+function arrow(x0, y0, x1, y1, lw, head) {
+  const a = Math.atan2(y1 - y0, x1 - x0), bx = x1 - Math.cos(a) * head * 0.8, by = y1 - Math.sin(a) * head * 0.8;
+  ctx.lineCap = 'round';
+  for (const [col, w] of [[W, lw + 8], [K, lw]]) { ctx.strokeStyle = col; ctx.lineWidth = w; ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(bx, by); ctx.stroke(); }
+  ctx.fillStyle = K; ctx.strokeStyle = W; ctx.lineWidth = 4; ctx.beginPath();
+  ctx.moveTo(x1, y1); ctx.lineTo(x1 - Math.cos(a - 0.45) * head, y1 - Math.sin(a - 0.45) * head); ctx.lineTo(x1 - Math.cos(a + 0.45) * head, y1 - Math.sin(a + 0.45) * head); ctx.closePath(); ctx.stroke(); ctx.fill();
+}
+function label(x, y, s, size, align = 'center') {
+  ctx.font = `900 ${size}px ${SANS}`; ctx.textAlign = align; ctx.textBaseline = 'middle';
+  ctx.lineWidth = 9; ctx.strokeStyle = W; ctx.lineJoin = 'round'; ctx.strokeText(s, x, y); ctx.fillStyle = K; ctx.fillText(s, x, y);
+}
+function apple(x, y, r, a = 0) {
+  ctx.save(); ctx.translate(x, y); ctx.rotate(a);
+  ctx.fillStyle = K; ctx.beginPath(); ctx.moveTo(2, -r * 0.8); ctx.quadraticCurveTo(r * 0.7, -r * 1.55, r * 1.1, -r * 1.2); ctx.quadraticCurveTo(r * 0.6, -r * 0.8, 2, -r * 0.8); ctx.fill();
+  ctx.lineWidth = 4; ctx.strokeStyle = K; ctx.beginPath(); ctx.moveTo(0, -r * 0.7); ctx.lineTo(-2, -r * 1.35); ctx.stroke();
+  ctx.fillStyle = RED; ctx.beginPath();
+  ctx.moveTo(0, -r * 0.7); ctx.bezierCurveTo(r * 0.7, -r * 1.15, r * 1.25, -r * 0.4, r * 0.95, r * 0.45);
+  ctx.bezierCurveTo(r * 0.75, r * 1.05, r * 0.2, r * 1.0, 0, r * 0.82); ctx.bezierCurveTo(-r * 0.2, r * 1.0, -r * 0.75, r * 1.05, -r * 0.95, r * 0.45);
+  ctx.bezierCurveTo(-r * 1.25, -r * 0.4, -r * 0.7, -r * 1.15, 0, -r * 0.7); ctx.closePath(); ctx.fill();
+  ctx.lineWidth = 5; ctx.strokeStyle = K; ctx.stroke();
+  ctx.save(); ctx.clip(); halftone(-r * 1.3, -r, r * 1.3, r * 1.1, (px, py) => clamp((px + py * 0.6) / r * 0.5 - 0.1, 0, 0.5), 7); ctx.restore();
+  ctx.fillStyle = W; ctx.beginPath(); ctx.ellipse(-r * 0.45, -r * 0.25, r * 0.16, r * 0.28, 0.5, 0, 6.28); ctx.fill();
+  ctx.restore();
+}
+function moonDisk(x, y, r, tone = 0.1) {
+  ctx.fillStyle = W; ctx.beginPath(); ctx.arc(x, y, r, 0, 6.28); ctx.fill();
+  withClip(() => ctx.arc(x, y, r, 0, 6.28), () => {
+    halftone(x - r, y - r, x + r, y + r, (px, py) => tone + clamp(((px - x) + (py - y)) / r * 0.35, 0, 0.5), 8);
+    ctx.fillStyle = 'rgba(17,17,17,0.0)';
+    for (const [dx, dy, cr] of [[-0.3, -0.25, 0.22], [0.25, 0.2, 0.16], [-0.1, 0.45, 0.12], [0.4, -0.35, 0.1]]) {
+      ctx.beginPath(); ctx.arc(x + dx * r, y + dy * r, cr * r, 0, 6.28); ctx.lineWidth = 3; ctx.strokeStyle = K; ctx.stroke();
+    }
+  });
+  ctx.beginPath(); ctx.arc(x, y, r, 0, 6.28); strokePath(5);
+}
+function earth(x, y, r, grid = true) {
+  ctx.fillStyle = W; ctx.beginPath(); ctx.arc(x, y, r, 0, 6.28); ctx.fill();
+  withClip(() => ctx.arc(x, y, r, 0, 6.28), () => {
+    halftone(x - r, y - r, x + r, y + r, (px, py) => 0.18 + clamp(((px - x) + (py - y)) / r * 0.3 + 0.15, 0, 0.6), 9);
+    if (grid) { ctx.strokeStyle = K; ctx.lineWidth = 2.5; }
+    if (grid) for (const k of [-0.5, 0, 0.5]) { ctx.beginPath(); ctx.ellipse(x, y + k * r, r * Math.sqrt(1 - k * k), r * 0.16, 0, 0, 6.28); ctx.stroke(); }
+    if (grid) for (const k of [0.35, 0.75]) { ctx.beginPath(); ctx.ellipse(x, y, r * k, r, 0, 0, 6.28); ctx.stroke(); }
+  });
+  ctx.beginPath(); ctx.arc(x, y, r, 0, 6.28); strokePath(5);
+  ctx.strokeStyle = W; ctx.lineWidth = 5; ctx.beginPath(); ctx.arc(x, y, r - 12, Math.PI * 1.1, Math.PI * 1.45); ctx.stroke();
+}
+
+// ---------- cannonball trajectories (central gravity, v in units of circular speed) ----------
+const EC = [1597, 314], ER = 100, R0 = 140;
+const TRAJ = [0.6, 0.8, 0.88, 1.0].map(v => {
+  const GM = R0; let x = 0, y = -R0, vx = v, vy = 0; const pts = [[x, y]]; let ang = 0, prev = Math.atan2(y, x);
+  for (let i = 0; i < 4000; i++) {
+    const r = Math.hypot(x, y), a = -GM / (r * r * r); vx += a * x; vy += a * y; x += vx; y += vy;
+    const cur = Math.atan2(y, x); let d = cur - prev; if (d < -Math.PI) d += 6.2832; if (d > Math.PI) d -= 6.2832; ang += d; prev = cur;
+    if (i % 3 === 0) pts.push([x, y]);
+    if (Math.hypot(x, y) < ER + 2 || ang > 6.2832) break;
+  }
+  return pts;
+});
+
+// ---------- panels ----------
+function panel1(t) {
+  const [x0, y0, x1, y1] = PAN.p1, G = 440;
+  halftone(x0, y0, x1, y1, (x, y) => y > G ? 0.12 + (y - G) / 250 : 0.05, 11);
+  const ay0 = 196, ay1 = 418, fk = clamp((t - 0.45) / 0.7), ay = lerp(ay0, ay1, fk * fk), AX = 560;
+  const falling = fk > 0 && fk < 1;
+  if (t > 0.5) focusLines(AX, ay, 150, 900, 70, 11, 0.75 * clamp((t - 0.5) / 0.15));
+  // ground
+  ctx.fillStyle = W; ctx.fillRect(x0, G, x1 - x0, 6); ctx.beginPath(); ctx.moveTo(x0, G); ctx.lineTo(x1, G); strokePath(5);
+  ctx.beginPath(); for (let i = 0; i < 18; i++) { const gx = x0 + 20 + i * 40; ctx.moveTo(gx, G); ctx.lineTo(gx - 6, G - 18); ctx.moveTo(gx + 6, G); ctx.lineTo(gx + 10, G - 14); } strokePath(3);
+  // trunk
+  ctx.beginPath(); ctx.moveTo(78, G + 4); ctx.bezierCurveTo(108, 360, 96, 260, 110, 150); ctx.lineTo(190, 150); ctx.bezierCurveTo(176, 260, 168, 360, 196, G + 4); ctx.closePath();
+  ctx.fillStyle = W; ctx.fill(); ctx.save(); ctx.clip(); halftone(60, 140, 200, G, (x) => 0.2 + (x - 80) / 160, 8); ctx.restore(); strokePath(5);
+  ctx.beginPath(); for (const [a, b] of [[120, 220], [150, 300], [130, 380]]) { ctx.moveTo(a, b); ctx.quadraticCurveTo(a + 14, b + 30, a + 4, b + 60); } strokePath(3);
+  // branch to apple
+  ctx.beginPath(); ctx.moveTo(180, 170); ctx.quadraticCurveTo(380, 150, 600, 175); strokePath(12); ctx.beginPath(); ctx.moveTo(180, 170); ctx.quadraticCurveTo(380, 150, 600, 175); strokePath(6, W);
+  // foliage
+  ctx.beginPath(); ctx.moveTo(x0, 175);
+  const bumps = [[100, 190], [180, 205], [270, 185], [360, 200], [450, 182], [530, 196], [620, 172], [700, 150], [770, 120]];
+  let px = x0; for (const [bx, by] of bumps) { ctx.quadraticCurveTo((px + bx) / 2, by + 34, bx, by); px = bx; }
+  ctx.lineTo(x1 + 20, y0 - 20); ctx.lineTo(x0, y0 - 20); ctx.closePath();
+  ctx.fillStyle = W; ctx.fill(); ctx.save(); ctx.clip(); halftone(x0, y0, x1, 240, (x, y) => 0.55 - (y - 40) / 420, 9);
+  ctx.beginPath(); const lr = mulberry32(5); for (let i = 0; i < 26; i++) { const lx = x0 + lr() * 720, ly = 50 + lr() * 130; ctx.moveTo(lx, ly); ctx.quadraticCurveTo(lx + 16, ly - 10, lx + 30, ly); ctx.quadraticCurveTo(lx + 16, ly + 8, lx, ly); } ctx.fillStyle = W; ctx.fill(); strokePath(3); ctx.restore();
+  ctx.beginPath(); ctx.moveTo(x0, 175); px = x0; for (const [bx, by] of bumps) { ctx.quadraticCurveTo((px + bx) / 2, by + 34, bx, by); px = bx; } strokePath(5);
+  // stem stub
+  ctx.beginPath(); ctx.moveTo(AX - 2, 172); ctx.lineTo(AX - 2, 182); strokePath(4);
+  // Newton (seated, facing right)
+  drawNewtonSitting(t, fk);
+  // apple
+  if (falling) {
+    ctx.beginPath(); for (const [dx, l] of [[-22, 90], [-8, 140], [8, 120], [22, 80]]) { ctx.moveTo(AX + dx, ay - 40); ctx.lineTo(AX + dx, ay - 40 - l * fk); } strokePath(4);
+  }
+  apple(AX, ay, 24, falling ? 0.5 * fk : fk >= 1 ? 0.35 : 0);
+  if (t > 1.15) {
+    const k = pop(t, 1.15);
+    ctx.save(); ctx.translate(640, 380); ctx.scale(k, k); ctx.rotate(-0.12);
+    ctx.font = `900 64px ${SANS}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.lineJoin = 'round';
+    ctx.lineWidth = 14; ctx.strokeStyle = K; ctx.strokeText('咚!', 0, 0); ctx.fillStyle = W; ctx.fillText('咚!', 0, 0);
+    ctx.restore();
+    ctx.beginPath(); for (const a of [-2.6, -2.2, -0.9, -0.5]) { ctx.moveTo(AX + Math.cos(a) * 34, ay + 18 + Math.sin(a) * 20); ctx.lineTo(AX + Math.cos(a) * 54, ay + 18 + Math.sin(a) * 34); } strokePath(4);
+  }
+  captionBox(60, 60, ['苹果为什么往下掉？'], 42, pop(t, 0.12));
+  captionBox(742, 470, ['地球的引力把它往下拉'], 40, pop(t, 1.25), 'right');
+}
+function drawNewtonSitting(t, fk) {
+  const look = clamp(fk * 1.4);
+  // legs
+  ctx.beginPath(); ctx.moveTo(228, 418); ctx.lineTo(352, 372); ctx.lineTo(392, 372); ctx.lineTo(268, 440); ctx.closePath(); ctx.fillStyle = K; ctx.fill(); strokePath(4);
+  ctx.beginPath(); ctx.moveTo(352, 370); ctx.lineTo(382, 432); ctx.lineTo(406, 432); ctx.lineTo(392, 370); ctx.closePath(); ctx.fillStyle = W; ctx.fill(); strokePath(4);
+  ctx.save(); ctx.beginPath(); ctx.moveTo(352, 370); ctx.lineTo(382, 432); ctx.lineTo(406, 432); ctx.lineTo(392, 370); ctx.clip(); halftone(340, 360, 420, 440, 0.3, 7); ctx.restore();
+  ctx.beginPath(); ctx.moveTo(374, 428); ctx.lineTo(428, 428); ctx.quadraticCurveTo(436, 442, 420, 444); ctx.lineTo(372, 444); ctx.closePath(); ctx.fillStyle = K; ctx.fill(); strokePath(3);
+  // coat body
+  ctx.beginPath(); ctx.moveTo(212, 330); ctx.quadraticCurveTo(250, 320, 282, 336); ctx.lineTo(292, 412); ctx.quadraticCurveTo(250, 446, 196, 440); ctx.quadraticCurveTo(190, 380, 212, 330); ctx.closePath();
+  ctx.fillStyle = K; ctx.fill(); strokePath(4);
+  ctx.beginPath(); ctx.moveTo(272, 350); ctx.lineTo(282, 410); ctx.moveTo(220, 360); ctx.quadraticCurveTo(214, 390, 222, 420); strokePath(3, W);
+  ctx.fillStyle = W; for (let i = 0; i < 4; i++) { ctx.beginPath(); ctx.arc(276 + i * 2, 362 + i * 14, 3, 0, 6.28); ctx.fill(); }
+  // arm to knee
+  ctx.beginPath(); ctx.moveTo(262, 344); ctx.quadraticCurveTo(306, 376, 330, 386); ctx.lineTo(338, 372); ctx.quadraticCurveTo(300, 354, 276, 334); ctx.closePath(); ctx.fillStyle = K; ctx.fill(); strokePath(4);
+  ctx.beginPath(); ctx.moveTo(328, 368); ctx.lineTo(344, 368); ctx.lineTo(346, 392); ctx.lineTo(326, 390); ctx.closePath(); ctx.fillStyle = W; ctx.fill(); strokePath(3);
+  ctx.beginPath(); ctx.ellipse(356, 378, 14, 10, 0.3, 0, 6.28); ctx.fillStyle = W; ctx.fill(); strokePath(3);
+  // head (tilts toward the falling apple)
+  ctx.save(); ctx.translate(248, 318); ctx.rotate(-0.12 + 0.18 * look);
+  // hair back
+  ctx.beginPath(); ctx.moveTo(-20, -64); ctx.bezierCurveTo(-60, -60, -64, -10, -50, 30); ctx.bezierCurveTo(-40, 46, -14, 40, -6, 26); ctx.lineTo(6, -40); ctx.closePath();
+  ctx.fillStyle = W; ctx.fill(); ctx.save(); ctx.clip(); halftone(-70, -70, 10, 50, 0.42, 7); ctx.restore(); strokePath(4);
+  ctx.beginPath(); for (const [cx, cy] of [[-44, -30], [-48, 0], [-36, 22], [-30, -50]]) { ctx.moveTo(cx + 10, cy); ctx.arc(cx, cy, 10, 0, 4.5); } strokePath(3);
+  // face
+  ctx.beginPath(); ctx.moveTo(-10, -60); ctx.bezierCurveTo(10, -66, 30, -54, 32, -36); ctx.lineTo(42, -22); ctx.lineTo(34, -18); ctx.quadraticCurveTo(36, -8, 30, -4);
+  ctx.quadraticCurveTo(28, 6, 18, 10); ctx.quadraticCurveTo(0, 12, -10, 4); ctx.closePath(); ctx.fillStyle = W; ctx.fill(); strokePath(4);
+  ctx.beginPath(); ctx.moveTo(14, -36); ctx.quadraticCurveTo(20, -42, 28, -40); strokePath(3);
+  ctx.fillStyle = K; ctx.beginPath(); ctx.ellipse(21, -31, 3.5, 4.5, 0, 0, 6.28); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(22, -8); ctx.lineTo(30, -8); strokePath(3);
+  // hair front
+  ctx.beginPath(); ctx.moveTo(-18, -66); ctx.bezierCurveTo(6, -76, 30, -64, 30, -48); ctx.bezierCurveTo(14, -58, 0, -54, -6, -40); ctx.bezierCurveTo(-8, -10, -12, 20, -18, 34); ctx.lineTo(-30, 20); ctx.closePath();
+  ctx.fillStyle = W; ctx.fill(); ctx.save(); ctx.clip(); halftone(-40, -80, 40, 40, 0.3, 7); ctx.restore(); strokePath(4);
+  ctx.restore();
+  // cravat
+  ctx.beginPath(); ctx.moveTo(240, 328); ctx.lineTo(262, 328); ctx.lineTo(258, 352); ctx.lineTo(246, 352); ctx.closePath(); ctx.fillStyle = W; ctx.fill(); strokePath(3);
+}
+const STARS = (() => { const r = mulberry32(9), a = []; for (let i = 0; i < 26; i++) a.push([800 + r() * 470, 60 + r() * 300, 3 + r() * 6]); return a; })();
+function panel2(t) {
+  const [x0, y0, x1, y1] = PAN.p2;
+  ctx.fillStyle = W; ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+  halftone(x0, y0, x1, y1, (x, y) => 1.05 - (y - y0) / 900, 10);
+  for (const [sx, sy, s] of STARS) {
+    if (Math.hypot(sx - 1150, sy - 170) < 110) continue;
+    const tw = 1 + 0.25 * Math.sin(t * 6 + sx);
+    ctx.fillStyle = W; ctx.beginPath(); ctx.moveTo(sx, sy - s * tw); ctx.lineTo(sx + s * 0.3, sy); ctx.lineTo(sx, sy + s * tw); ctx.lineTo(sx - s * 0.3, sy); ctx.closePath();
+    ctx.moveTo(sx - s * tw, sy); ctx.lineTo(sx, sy + s * 0.3); ctx.lineTo(sx + s * tw, sy); ctx.lineTo(sx, sy - s * 0.3); ctx.closePath(); ctx.fill();
+  }
+  ctx.strokeStyle = W; ctx.lineWidth = 3;
+  for (let i = 0; i < 18; i++) { const a = i / 18 * 6.2832; ctx.beginPath(); ctx.moveTo(1150 + Math.cos(a) * 92, 170 + Math.sin(a) * 92); ctx.lineTo(1150 + Math.cos(a) * (112 + (i % 2) * 18), 170 + Math.sin(a) * (112 + (i % 2) * 18)); ctx.stroke(); }
+  moonDisk(1150, 170, 78, 0.06);
+  // Newton seen from behind, rim-lit
+  ctx.beginPath(); ctx.moveTo(800, y1 + 10); ctx.quadraticCurveTo(806, 480, 850, 466); ctx.quadraticCurveTo(880, 456, 892, 430);
+  ctx.bezierCurveTo(860, 420, 856, 360, 896, 340); ctx.bezierCurveTo(930, 324, 972, 340, 978, 380); ctx.bezierCurveTo(984, 410, 970, 428, 952, 434);
+  ctx.quadraticCurveTo(966, 458, 1000, 466); ctx.quadraticCurveTo(1040, 480, 1046, y1 + 10); ctx.closePath();
+  ctx.fillStyle = K; ctx.fill();
+  ctx.beginPath(); ctx.moveTo(904, 342);
+  ctx.bezierCurveTo(866, 350, 850, 384, 856, 410); ctx.quadraticCurveTo(838, 428, 852, 446); ctx.quadraticCurveTo(840, 466, 862, 480);
+  ctx.lineTo(990, 480); ctx.quadraticCurveTo(1010, 466, 998, 446); ctx.quadraticCurveTo(1012, 428, 994, 410);
+  ctx.bezierCurveTo(1000, 380, 984, 346, 946, 338); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(858, 404); ctx.bezierCurveTo(852, 370, 880, 342, 922, 338); ctx.bezierCurveTo(962, 336, 992, 364, 994, 404); strokePath(5, W);
+  ctx.beginPath(); ctx.moveTo(1000, 474); ctx.quadraticCurveTo(1036, 484, 1040, 520); strokePath(4, W);
+  bubble(1050, 300, 64, 52, [[960, 336, 9], [990, 322, 13]], ['？'], 72, pop(t, 2.55), true);
+  captionBox(806, 62, ['那月亮为什么', '不掉下来？'], 42, pop(t, 2.4));
+}
+function panel3(t) {
+  const [x0, y0, x1, y1] = PAN.p3;
+  halftone(x0, y0, x1, y1, 0.07, 11);
+  ctx.strokeStyle = 'rgba(17,17,17,0.35)'; ctx.lineWidth = 2; ctx.setLineDash([6, 10]);
+  ctx.beginPath(); ctx.arc(EC[0], EC[1], R0, 0, 6.28); ctx.stroke(); ctx.setLineDash([]);
+  earth(EC[0], EC[1], ER, false);
+  // mountain + cannon
+  ctx.beginPath(); ctx.moveTo(EC[0] - 46, EC[1] - ER + 14); ctx.lineTo(EC[0] - 6, EC[1] - R0 + 4); ctx.lineTo(EC[0] + 6, EC[1] - R0 + 4); ctx.lineTo(EC[0] + 46, EC[1] - ER + 14); ctx.closePath();
+  ctx.fillStyle = K; ctx.fill(); strokePath(4);
+  ctx.beginPath(); ctx.moveTo(EC[0] - 18, EC[1] - R0 + 24); ctx.lineTo(EC[0] - 6, EC[1] - R0 + 4); ctx.lineTo(EC[0] + 6, EC[1] - R0 + 4); ctx.lineTo(EC[0] + 18, EC[1] - R0 + 24); ctx.closePath(); ctx.fillStyle = W; ctx.fill();
+  ctx.fillStyle = K; ctx.fillRect(EC[0] - 10, EC[1] - R0 - 12, 30, 12); ctx.beginPath(); ctx.arc(EC[0] - 6, EC[1] - R0 - 2, 8, 0, 6.28); ctx.fill();
+  const starts = [4.5, 4.85, 5.2, 5.55], durs = [0.35, 0.4, 0.45, 0.75];
+  TRAJ.forEach((pts, i) => {
+    const k = clamp((t - starts[i]) / durs[i]); if (k <= 0) return;
+    const n = Math.max(2, Math.floor(pts.length * k));
+    ctx.beginPath();
+    for (let j = 0; j < n; j++) { const [px, py] = pts[j]; j ? ctx.lineTo(EC[0] + px, EC[1] + py) : ctx.moveTo(EC[0] + px, EC[1] + py); }
+    strokePath(i === 3 ? 13 : 11, W); ctx.setLineDash(i === 3 ? [] : [14, 9]); strokePath(i === 3 ? 6 : 5); ctx.setLineDash([]);
+    const [hx, hy] = pts[n - 1];
+    ctx.fillStyle = K; ctx.beginPath(); ctx.arc(EC[0] + hx, EC[1] + hy, i === 3 ? 10 : 7, 0, 6.28); ctx.fill();
+    if (k >= 1 && i < 3) { ctx.beginPath(); for (let a = 0; a < 6; a++) { const aa = a / 6 * 6.28; ctx.moveTo(EC[0] + hx + Math.cos(aa) * 10, EC[1] + hy + Math.sin(aa) * 10); ctx.lineTo(EC[0] + hx + Math.cos(aa) * 20, EC[1] + hy + Math.sin(aa) * 20); } strokePath(3); }
+  });
+  captionBox(1330, 58, ['牛顿设想：山顶平射炮弹'], 38, pop(t, 4.32));
+  captionBox(1330, 466, ['越快飞得越远，够快就绕着转'], 37, pop(t, 5.9));
+}
+function panel4(t) {
+  const [x0, y0, x1, y1] = PAN.p4, E = [250, 1010], OR = 380;
+  halftone(x0, y0, x1, y1, (x, y) => 0.75 - (x - x0) / 2400, 10);
+  ctx.fillStyle = W; const sr = mulberry32(3); for (let i = 0; i < 30; i++) { const sx = 300 + sr() * 840, sy = 580 + sr() * 370; ctx.beginPath(); ctx.arc(sx, sy, 1.5 + sr() * 2.5, 0, 6.28); ctx.fill(); }
+  earth(E[0], E[1], 150);
+  const th = lerp(72, 50, ease(clamp((t - 6.3) / 2.0))) * Math.PI / 180;
+  const M = [E[0] + OR * Math.cos(th), E[1] - OR * Math.sin(th)];
+  // orbit
+  ctx.beginPath(); ctx.arc(E[0], E[1], OR, -Math.PI * 0.62, -0.05); strokePath(11); ctx.setLineDash([18, 12]); ctx.beginPath(); ctx.arc(E[0], E[1], OR, -Math.PI * 0.62, -0.05); strokePath(5, W); ctx.setLineDash([]);
+  // motion streaks behind the moon
+  ctx.beginPath(); for (const [dr, l] of [[-26, 0.16], [0, 0.22], [26, 0.14]]) ctx.arc(E[0], E[1], OR + dr, -th - 0.08 - l, -th - 0.08); strokePath(5, W);
+  // tangent (where it would go without gravity)
+  const tg = [Math.sin(th), Math.cos(th)];
+  const ak = prog(t, 6.75, 7.05);
+  if (ak > 0) {
+    ctx.setLineDash([10, 12]); ctx.beginPath(); ctx.moveTo(...M); ctx.lineTo(M[0] + tg[0] * 520 * ak, M[1] + tg[1] * 520 * ak); strokePath(3, W); ctx.setLineDash([]);
+    arrow(M[0] + tg[0] * 62, M[1] + tg[1] * 62, M[0] + tg[0] * (62 + 140 * ak), M[1] + tg[1] * (62 + 140 * ak), 8, 30);
+    const g = [(E[0] - M[0]) / OR, (E[1] - M[1]) / OR];
+    arrow(M[0] + g[0] * 62, M[1] + g[1] * 62, M[0] + g[0] * (62 + 110 * ak), M[1] + g[1] * (62 + 110 * ak), 8, 30);
+    ctx.globalAlpha = clamp(ak * 2 - 1);
+    label(M[0] + tg[0] * 210 + 20, M[1] + tg[1] * 210 + 30, '横向速度', 38, 'left');
+    label(M[0] + g[0] * 120 - 52, M[1] + g[1] * 120 - 40, '引力', 38, 'center');
+    ctx.globalAlpha = 1;
+  }
+  moonDisk(M[0], M[1], 52, 0.12);
+  bubble(850, 768, 210, 54, [M[0] + 50, M[1] + 8, 668, 760, 676, 786], ['我一直在往下掉！'], 44, pop(t, 7.05));
+  captionBox(1128, 584, ['一边往下掉，一边往前跑，', '所以一直绕着地球转'], 40, pop(t, 7.55), 'right');
+}
+function panel5(t) {
+  const [x0, y0, x1, y1] = PAN.p5, cx = (x0 + x1) / 2;
+  ctx.fillStyle = W; ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+  focusLines(cx, 740, 260, 700, 110, 21, 0.85);
+  // earth horizon
+  ctx.beginPath(); ctx.arc(cx, 1820, 900, 0, 6.28); ctx.fillStyle = W; ctx.fill();
+  ctx.save(); ctx.clip(); halftone(x0, 900, x1, y1, (x, y) => 0.2 + (y - 920) / 140, 9); ctx.restore();
+  ctx.beginPath(); ctx.arc(cx, 1820, 900, Math.PI * 1.3, Math.PI * 1.7); strokePath(5);
+  apple(1262, 640, 30, 0.2);
+  moonDisk(1792, 640, 38, 0.12);
+  arrow(1262, 690, 1290, 880, 7, 26); arrow(1792, 690, 1762, 880, 7, 26);
+  const k = pop(t, 8.85);
+  if (k > 0) {
+    ctx.save(); ctx.translate(cx, 740); ctx.scale(k, k);
+    ctx.font = `900 76px ${SANS}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.lineJoin = 'round';
+    for (const [s, y] of [['拉苹果的力，', -56], ['也拉着月亮', 50]]) { ctx.lineWidth = 16; ctx.strokeStyle = W; ctx.strokeText(s, 0, y); ctx.fillStyle = RED; ctx.fillText(s, 0, y); }
+    ctx.restore();
+  }
+  const k2 = pop(t, 9.3);
+  if (k2 > 0) { ctx.save(); ctx.translate(cx, 868); ctx.scale(k2, k2); label(0, 0, '—— 万有引力', 40); ctx.restore(); }
+}
+
+// ---------- camera ----------
+function fit(r, pad = 70) { const w = r[2] - r[0], h = r[3] - r[1]; return [(r[0] + r[2]) / 2, (r[1] + r[3]) / 2, Math.min(1920 / (w + pad), 1080 / (h + pad))]; }
+const SHOTS = [[0, 1.9, 'p1'], [2.35, 3.8, 'p2'], [4.25, 6.2, 'p3'], [6.65, 8.3, 'p4'], [8.75, 9.9, 'p5'], [10.5, 11, 'page']];
+function camera(t) {
+  for (let i = 0; i < SHOTS.length; i++) {
+    const [a, b, n] = SHOTS[i];
+    const f = fit(PAN[n], n === 'page' ? 40 : 70);
+    if (t <= b || i === SHOTS.length - 1) {
+      if (t >= a || i === 0) { const push = 1 + 0.035 * clamp((t - a) / (b - a)); return [f[0], f[1], f[2] * (n === 'page' ? 1 : push)]; }
+      const [pa, pb, pn] = SHOTS[i - 1]; const pf = fit(PAN[pn], 70); const pz = pf[2] * 1.035;
+      const k = ease((t - pb) / (a - pb));
+      return [lerp(pf[0], f[0], k), lerp(pf[1], f[1], k), Math.exp(lerp(Math.log(pz), Math.log(f[2]), k)) * (1 - 0.12 * Math.sin(Math.PI * k))];
+    }
+  }
+}
+
+window.__info = { fps: FPS, duration: DUR, frames: Math.round(FPS * DUR) };
+window.__render = t => {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = '#1b1b1b'; ctx.fillRect(0, 0, 1920, 1080);
+  const [cx, cy, z] = camera(t);
+  ctx.setTransform(z, 0, 0, z, 960 - cx * z, 540 - cy * z);
+  ctx.fillStyle = '#000'; ctx.fillRect(14, 16, 1920, 1004);
+  ctx.fillStyle = W; ctx.fillRect(0, 0, 1920, 1004);
+  for (const [n, fn] of [['p1', panel1], ['p2', panel2], ['p3', panel3], ['p4', panel4], ['p5', panel5]]) {
+    const [x0, y0, x1, y1] = PAN[n];
+    ctx.save(); ctx.beginPath(); ctx.rect(x0, y0, x1 - x0, y1 - y0); ctx.clip(); fn(t); ctx.restore();
+    ctx.lineWidth = 7; ctx.strokeStyle = K; ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
+  }
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.font = `400 22px ${SANS}`; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+  ctx.fillStyle = '#8a8a8a'; ctx.fillText('漫画分格 demo · 代码逐帧渲染', 40, 1056);
+  return { seg: 'comic', tau: t.toFixed(2) };
+};
+window.__render(0);
+document.fonts.ready.then(() => { window.__render(0); window.__ready = true; });
+</script>
+</body>
+</html>

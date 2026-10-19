@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin:0; width:1920px; height:1080px; overflow:hidden; background:#2a1c12; }
+  canvas { display:block; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1920" height="1080"></canvas>
+<script>
+const FPS = 30, DUR = 12;
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const SERIF = '"Noto Serif CJK SC",serif', SANS = '"Noto Sans CJK SC",sans-serif';
+const clamp = (x, a = 0, b = 1) => Math.max(a, Math.min(b, x));
+const ease = x => { x = clamp(x); return x < .5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2; };
+const lerp = (a, b, k) => a + (b - a) * k;
+function mulberry32(a) { return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+
+// schematic projection: lon 56–116E, lat 29–51N
+const WW = 6000, WH = 2860, G = (lon, lat) => [(lon - 56) * 100, (51 - lat) * 130];
+const INK = 'rgba(62,42,24,', VERM = '#b5301c';
+
+function smooth(pts, n = 10) { // catmull-rom
+  const out = [];
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[Math.max(i - 1, 0)], p1 = pts[i], p2 = pts[i + 1], p3 = pts[Math.min(i + 2, pts.length - 1)];
+    for (let k = 0; k < n; k++) { const t = k / n, t2 = t * t, t3 = t2 * t;
+      out.push([0, 1].map(j => 0.5 * (2 * p1[j] + (-p0[j] + p2[j]) * t + (2 * p0[j] - 5 * p1[j] + 4 * p2[j] - p3[j]) * t2 + (-p0[j] + 3 * p1[j] - 3 * p2[j] + p3[j]) * t3))); }
+  }
+  out.push(pts[pts.length - 1]); return out;
+}
+function measure(pts) { const c = [0]; for (let i = 1; i < pts.length; i++) c.push(c[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1])); return c; }
+function at(pts, cum, d) { d = clamp(d, 0, cum[cum.length - 1]); let i = 1; while (i < cum.length - 1 && cum[i] < d) i++; const k = (d - cum[i - 1]) / ((cum[i] - cum[i - 1]) || 1); return [lerp(pts[i - 1][0], pts[i][0], k), lerp(pts[i - 1][1], pts[i][1], k), i]; }
+
+// ---------- stations & route (positions schematic; order per 《史记·大宛列传》) ----------
+const ST = [
+  { n: '长安', p: G(108.9, 34.3), ta: 1.25, cap: '前139年前后，张骞率百余人奉命西行', side: -1 },
+  { n: '陇西', p: G(103.9, 35.4), ta: 2.85, cap: '出陇西，进入狭长的河西走廊', side: 1 },
+  { n: '匈奴', p: G(102.6, 43.0), ta: 4.25, cap: '途中被匈奴扣留，一留就是十余年', side: -1 },
+  { n: '大宛', p: G(71.8, 40.7), ta: 6.85, cs: 5.3, cap: '趁机逃脱，向西走了数十日到大宛', side: 1 },
+  { n: '康居', p: G(68.6, 43.1), ta: 7.85, cap: '大宛派向导和翻译，送他到康居', side: -1 },
+  { n: '大月氏', p: G(67.2, 38.6), ta: 9.0, cap: '终到大月氏，可对方已无心再战匈奴', side: 1 },
+];
+const LEGS = [
+  { t0: 1.95, t1: 2.85, pts: [ST[0].p, G(106.8, 34.6), G(105.2, 34.9), ST[1].p] },
+  { t0: 3.45, t1: 4.25, pts: [ST[1].p, G(102.7, 37.4), G(100.8, 39.0), G(101.3, 41.2), ST[2].p] },
+  { t0: 5.3, t1: 6.85, pts: [ST[2].p, G(98.5, 42.2), G(93, 41.6), G(87, 41.5), G(81, 41.0), G(76.2, 39.8), G(73.6, 40.3), ST[3].p] },
+  { t0: 7.3, t1: 7.85, pts: [ST[3].p, G(70.4, 41.7), ST[4].p] },
+  { t0: 8.35, t1: 9.0, pts: [ST[4].p, G(67.5, 41.0), ST[5].p] },
+].map(L => { const pts = smooth(L.pts, 14); return { ...L, pts, cum: measure(pts) }; });
+const RET = (() => { const pts = smooth([ST[5].p, G(69.5, 37.3), G(74, 37.6), G(80, 37.0), G(86, 38.0), G(91, 38.2), G(96, 36.8), G(100.5, 36.3), G(104.5, 35.0), ST[0].p], 14); return { t0: 9.75, t1: 10.85, pts, cum: measure(pts) }; })();
+
+function headAt(t) {
+  if (t < LEGS[0].t0) return ST[0].p;
+  for (let i = 0; i < LEGS.length; i++) { const L = LEGS[i]; if (t <= L.t1) { if (t < L.t0) return L.pts[0]; const k = ease((t - L.t0) / (L.t1 - L.t0)); const p = at(L.pts, L.cum, k * L.cum[L.cum.length - 1]); return [p[0], p[1]]; } }
+  return ST[5].p;
+}
+
+// ---------- parchment world texture (built once, static) ----------
+const TS = 0.75, tex = document.createElement('canvas'); tex.width = WW * TS; tex.height = WH * TS;
+function buildTexture() {
+  const g = tex.getContext('2d'), r = mulberry32(139);
+  g.scale(TS, TS);
+  g.fillStyle = '#dcc495'; g.fillRect(0, 0, WW, WH);
+  for (let i = 0; i < 70; i++) { // stains
+    const x = r() * WW, y = r() * WH, rad = 120 + r() * 520, a = 0.05 + r() * 0.12;
+    const gr = g.createRadialGradient(x, y, 0, x, y, rad); const dark = r() < 0.6;
+    gr.addColorStop(0, dark ? `rgba(150,105,55,${a})` : `rgba(245,230,195,${a * 1.4})`); gr.addColorStop(1, 'rgba(150,105,55,0)');
+    g.fillStyle = gr; g.fillRect(x - rad, y - rad, rad * 2, rad * 2);
+  }
+  for (let i = 0; i < 14; i++) { // water rings
+    const x = r() * WW, y = r() * WH, rad = 40 + r() * 110; g.strokeStyle = `rgba(130,85,40,${0.06 + r() * 0.08})`; g.lineWidth = 3 + r() * 5; g.beginPath(); g.arc(x, y, rad, 0, 6.283); g.stroke();
+  }
+  // grain
+  const nc = document.createElement('canvas'); nc.width = nc.height = 256; const nx = nc.getContext('2d'), id = nx.createImageData(256, 256);
+  for (let i = 0; i < id.data.length; i += 4) { const v = r(); id.data[i] = 90; id.data[i + 1] = 60; id.data[i + 2] = 30; id.data[i + 3] = v < 0.5 ? 0 : (v - 0.5) * 70; }
+  nx.putImageData(id, 0, 0); g.fillStyle = g.createPattern(nc, 'repeat'); g.fillRect(0, 0, WW, WH);
+  for (let i = 0; i < 900; i++) { g.fillStyle = `rgba(110,70,35,${0.05 + r() * 0.12})`; g.beginPath(); g.arc(r() * WW, r() * WH, 1 + r() * 4, 0, 6.283); g.fill(); }
+  // creases (folded in thirds and halves)
+  const crease = (x0, y0, x1, y1) => {
+    const nx_ = -(y1 - y0), ny_ = x1 - x0, L = Math.hypot(nx_, ny_), ux = nx_ / L, uy = ny_ / L;
+    for (const [o, c, w] of [[-14, 'rgba(255,245,215,0.10)', 26], [5, 'rgba(95,60,28,0.16)', 10], [0, 'rgba(70,45,20,0.28)', 3]]) {
+      g.strokeStyle = c; g.lineWidth = w; g.beginPath(); g.moveTo(x0 + ux * o, y0 + uy * o);
+      for (let k = 1; k <= 30; k++) { const f = k / 30; g.lineTo(lerp(x0, x1, f) + ux * (o + Math.sin(f * 17) * 4), lerp(y0, y1, f) + uy * (o + Math.sin(f * 17) * 4)); } g.stroke();
+    }
+  };
+  crease(WW / 3, 0, WW / 3 + 30, WH); crease(WW * 2 / 3, 0, WW * 2 / 3 - 20, WH); crease(0, WH / 2, WW, WH / 2 + 25);
+  // burnt edges
+  const edge = (x0, y0, x1, y1, w) => { const gr = g.createLinearGradient(x0, y0, x1, y1); gr.addColorStop(0, 'rgba(70,40,15,0.85)'); gr.addColorStop(0.25, 'rgba(110,70,30,0.35)'); gr.addColorStop(1, 'rgba(110,70,30,0)'); g.fillStyle = gr; return gr; };
+  edge(0, 0, 0, 240); g.fillRect(0, 0, WW, 240); edge(0, WH, 0, WH - 240); g.fillRect(0, WH - 240, WW, 240);
+  edge(0, 0, 260, 0); g.fillRect(0, 0, 260, WH); edge(WW, 0, WW - 260, 0); g.fillRect(WW - 260, 0, 260, WH);
+  // double border
+  g.strokeStyle = INK + '0.55)'; g.lineWidth = 6; g.strokeRect(110, 110, WW - 220, WH - 220); g.lineWidth = 2.5; g.strokeRect(135, 135, WW - 270, WH - 270);
+
+  // mountains (淡墨)
+  const peak = (x, y, s, a) => {
+    g.strokeStyle = INK + a + ')'; g.lineWidth = 3.2; g.lineCap = 'round'; g.lineJoin = 'round';
+    g.beginPath(); g.moveTo(x - s, y); g.quadraticCurveTo(x - s * 0.35, y - s * 0.55, x, y - s * 0.95); g.quadraticCurveTo(x + s * 0.4, y - s * 0.5, x + s, y); g.stroke();
+    g.lineWidth = 2; for (let k = 1; k <= 3; k++) { const f = k / 4; g.beginPath(); g.moveTo(x + s * 0.08 * k, y - s * (0.85 - f * 0.6)); g.lineTo(x + s * (0.15 + f * 0.45), y - s * 0.05); g.stroke(); }
+    g.fillStyle = INK + (a * 0.18) + ')'; g.beginPath(); g.moveTo(x, y - s * 0.95); g.quadraticCurveTo(x + s * 0.4, y - s * 0.5, x + s, y); g.lineTo(x, y); g.fill();
+  };
+  const range = (ll, band, step, smin, smax) => {
+    const pts = smooth(ll.map(q => G(q[0], q[1])), 8), cum = measure(pts), Ltot = cum[cum.length - 1];
+    const items = [];
+    for (let d = 0; d < Ltot; d += step) { const p = at(pts, cum, d); for (let j = 0; j < 2; j++) items.push([p[0] + (r() - 0.5) * 40, p[1] + (r() - 0.5) * band, smin + r() * (smax - smin)]); }
+    items.sort((a, b) => a[1] - b[1]).forEach(([x, y, s]) => peak(x, y, s, 0.42 + r() * 0.2));
+  };
+  range([[75.5, 40.9], [80, 42.1], [85, 43.4], [90, 43.5], [95, 43.0]], 120, 58, 38, 64);       // 天山
+  range([[76, 36.8], [80, 36.0], [85, 35.6], [90, 35.9], [95, 35.9]], 110, 62, 36, 60);          // 昆仑
+  range([[94.5, 39.6], [98, 38.9], [101, 37.9], [103, 37.1]], 70, 52, 32, 52);                   // 祁连
+  range([[73.2, 39.6], [74.0, 38.5], [74.6, 37.4], [74.2, 36.4]], 160, 46, 40, 66);              // 葱岭
+  range([[105.5, 33.9], [108, 33.8], [111.5, 33.9]], 60, 56, 30, 48);                            // 秦岭
+  range([[106.5, 41.6], [109, 41.4], [111.5, 41.2]], 50, 60, 28, 44);                            // 阴山
+  range([[68.5, 35.6], [71, 35.6], [73, 36.2]], 70, 56, 30, 48);                                 // 兴都库什
+  // rivers
+  const river = (ll, w) => {
+    const pts = smooth(ll.map(q => G(q[0], q[1])), 10);
+    g.strokeStyle = 'rgba(70,82,88,0.55)'; g.lineCap = 'round'; g.lineJoin = 'round';
+    for (let i = 1; i < pts.length; i++) { g.lineWidth = w * (0.5 + 0.5 * i / pts.length); g.beginPath(); g.moveTo(pts[i - 1][0], pts[i - 1][1]); g.lineTo(pts[i][0], pts[i][1]); g.stroke(); }
+  };
+  river([[96, 35.2], [100, 36.0], [103.6, 36.1], [105.5, 37.4], [106.6, 39.3], [107, 40.7], [109, 40.8], [111, 40.2], [110.7, 38], [110.4, 35.5], [110.3, 34.6], [112.5, 34.8]], 9);
+  river([[104.4, 34.9], [106.5, 34.4], [108.9, 34.45], [110.3, 34.6]], 6);
+  river([[76, 39.6], [80, 40.6], [84, 41.0], [87, 40.7], [89.4, 40.3]], 6);
+  river([[72.8, 40.9], [70.5, 40.6], [69, 40.8], [68, 42.0], [66.5, 43.8], [64, 45.2], [61.6, 46.0]], 6);
+  river([[73, 37.2], [70, 37.1], [67.5, 37.3], [65.5, 38.4], [63, 40], [60.8, 42.3], [60, 44.2]], 6);
+  // lakes
+  const lake = (lon, lat, rx, ry) => { const [x, y] = G(lon, lat); g.fillStyle = 'rgba(80,95,100,0.12)'; g.strokeStyle = 'rgba(70,82,88,0.5)'; g.lineWidth = 3; g.beginPath(); g.ellipse(x, y, rx, ry, -0.2, 0, 6.283); g.fill(); g.stroke(); };
+  lake(90.5, 40.4, 60, 34); lake(60.4, 45.3, 85, 130); lake(77.3, 42.4, 70, 22);
+  // deserts (stipple)
+  const sand = (lon0, lon1, lat0, lat1, n) => { for (let i = 0; i < n; i++) { const [x, y] = G(lerp(lon0, lon1, r()), lerp(lat0, lat1, r())); g.fillStyle = INK + (0.15 + r() * 0.2) + ')'; g.beginPath(); g.arc(x, y, 2 + r() * 2.5, 0, 6.283); g.fill(); } };
+  sand(78.5, 88, 37.8, 40.2, 700); sand(96, 110, 41.8, 44.8, 800);
+  // region names
+  const label = (s, lon, lat, size, a, sp = 0.35, rot = 0) => {
+    const [x, y] = G(lon, lat); g.save(); g.translate(x, y); g.rotate(rot); g.fillStyle = INK + a + ')'; g.font = `600 ${size}px ${SERIF}`; g.textAlign = 'center'; g.textBaseline = 'middle';
+    const chars = [...s], w = chars.length * size * (1 + sp); chars.forEach((c, i) => g.fillText(c, -w / 2 + (i + 0.5) * size * (1 + sp), 0)); g.restore();
+  };
+  label('漠 北', 105.5, 47.0, 170, 0.3, 0.6); label('大 漠', 103, 44.2, 70, 0.32, 0.4);
+  label('天山', 86.5, 44.5, 64, 0.5); label('昆仑', 86, 34.5, 64, 0.5); label('祁连山', 97.2, 37.6, 52, 0.5, 0.2, -0.3);
+  label('葱岭', 76.2, 38.0, 60, 0.5); label('流沙', 83.5, 39.0, 70, 0.4, 0.8); label('盐泽', 90.6, 39.2, 44, 0.45);
+  label('河西走廊', 99.2, 40.1, 58, 0.55, 0.35, -0.42); label('黄河', 108.2, 39.6, 52, 0.5); label('渭水', 106.6, 33.9, 40, 0.45);
+  label('药杀水', 66.8, 44.6, 44, 0.45, 0.2, -0.75); label('妫水', 63.4, 39.0, 44, 0.45, 0.2, -0.7); label('秦岭', 109.5, 32.9, 44, 0.42);
+  label('西  域', 81, 45.6, 110, 0.28, 0.6);
+}
+
+// ---------- per-frame overlays ----------
+function seal(x, y, s, txt, a = 1) {
+  ctx.save(); ctx.globalAlpha = a; ctx.translate(x, y); ctx.rotate(-0.06);
+  ctx.fillStyle = VERM; ctx.fillRect(-s / 2, -s / 2, s, s);
+  ctx.strokeStyle = '#e8d3a8'; ctx.lineWidth = 3; ctx.strokeRect(-s / 2 + 7, -s / 2 + 7, s - 14, s - 14);
+  ctx.fillStyle = '#efdcb4'; ctx.font = `900 ${s * 0.3}px ${SERIF}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  const cs = [...txt]; if (cs.length === 3) { ctx.fillText(cs[0] + cs[1], 0, -s * 0.14); ctx.fillText(cs[2], 0, s * 0.2); } else ctx.fillText(txt, 0, 0);
+  ctx.restore();
+}
+function ribbon(txt, a, y = 958, size = 44) {
+  if (a <= 0) return;
+  ctx.save(); ctx.globalAlpha = a; ctx.font = `600 ${size}px ${SERIF}`; const w = ctx.measureText(txt).width + 120, x = 960 - w / 2, h = size + 40;
+  ctx.fillStyle = 'rgba(236,220,182,0.93)'; ctx.strokeStyle = 'rgba(70,45,22,0.85)'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(x, y - h / 2); ctx.lineTo(x + w, y - h / 2); ctx.lineTo(x + w - 18, y); ctx.lineTo(x + w, y + h / 2); ctx.lineTo(x, y + h / 2); ctx.lineTo(x + 18, y); ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.strokeStyle = 'rgba(70,45,22,0.4)'; ctx.lineWidth = 1.5; ctx.strokeRect(x + 30, y - h / 2 + 8, w - 60, h - 16);
+  ctx.fillStyle = '#2e1d10'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(txt, 960, y + 2);
+  ctx.restore();
+}
+
+window.__info = { fps: FPS, duration: DUR, frames: Math.round(FPS * DUR) };
+window.__render = t => {
+  // camera: look-ahead average of the route head, blended with a whole-map overview at both ends
+  let cx = 0, cy = 0, n = 0; for (let d = -0.3; d <= 0.45; d += 0.05) { const h = headAt(t + d); cx += h[0]; cy += h[1]; n++; } cx /= n; cy /= n;
+  const zFit = Math.min(1920 / WW, 1080 / WH);
+  let z = 0.72 - 0.24 * Math.sin(Math.PI * clamp((t - 5.3) / 1.55));
+  cx = clamp(cx, 960 / z, WW - 960 / z); cy = clamp(cy, 540 / z, WH - 540 / z);
+  const ov = Math.max(1 - ease((t - 0.35) / 1.0), ease((t - 9.55) / 1.15));
+  cx = lerp(cx, WW / 2, ov); cy = lerp(cy, WH / 2, ov); z = Math.exp(lerp(Math.log(z), Math.log(zFit), ov));
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.fillStyle = '#2a1c12'; ctx.fillRect(0, 0, 1920, 1080);
+  ctx.setTransform(z, 0, 0, z, 960 - cx * z, 540 - cy * z);
+  ctx.save(); ctx.shadowColor = 'rgba(0,0,0,0.55)'; ctx.shadowBlur = 40; ctx.fillStyle = '#000'; ctx.fillRect(0, 0, WW, WH); ctx.restore();
+  ctx.drawImage(tex, 0, 0, WW, WH);
+
+  // route
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  const drawPath = (pts, cum, upto, dash) => {
+    if (upto <= 0) return; ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) { if (cum[i] > upto) { const p = at(pts, cum, upto); ctx.lineTo(p[0], p[1]); break; } ctx.lineTo(pts[i][0], pts[i][1]); }
+    ctx.setLineDash(dash ? [22 / z, 16 / z] : []);
+    ctx.strokeStyle = 'rgba(120,30,15,0.25)'; ctx.lineWidth = 14 / z; ctx.stroke();
+    ctx.strokeStyle = VERM; ctx.lineWidth = 7 / z; ctx.stroke(); ctx.setLineDash([]);
+  };
+  for (const L of LEGS) drawPath(L.pts, L.cum, ease((t - L.t0) / (L.t1 - L.t0)) * L.cum[L.cum.length - 1]);
+  ctx.globalAlpha = 0.8; drawPath(RET.pts, RET.cum, ease((t - RET.t0) / (RET.t1 - RET.t0)) * RET.cum[RET.cum.length - 1], true); ctx.globalAlpha = 1;
+  // station dots
+  ST.forEach((s, i) => { if (t < s.ta - 0.05) return; const k = clamp((t - s.ta + 0.05) / 0.25);
+    ctx.fillStyle = VERM; ctx.beginPath(); ctx.arc(s.p[0], s.p[1], (9 + 6 * (1 - k)) / z, 0, 6.283); ctx.fill();
+    ctx.strokeStyle = VERM; ctx.lineWidth = 3 / z; ctx.beginPath(); ctx.arc(s.p[0], s.p[1], 18 / z, 0, 6.283); ctx.stroke(); });
+  // route head
+  if (t > 1.9 && t < 9.2) { const h = headAt(t); const pulse = 1 + 0.25 * Math.sin(t * 9);
+    ctx.fillStyle = 'rgba(181,48,28,0.25)'; ctx.beginPath(); ctx.arc(h[0], h[1], 26 * pulse / z, 0, 6.283); ctx.fill();
+    ctx.fillStyle = VERM; ctx.beginPath(); ctx.arc(h[0], h[1], 11 / z, 0, 6.283); ctx.fill(); }
+  if (t > 9.75) { const p = at(RET.pts, RET.cum, ease((t - RET.t0) / (RET.t1 - RET.t0)) * RET.cum[RET.cum.length - 1]);
+    ctx.fillStyle = VERM; ctx.beginPath(); ctx.arc(p[0], p[1], 10 / z, 0, 6.283); ctx.fill(); }
+
+  // station names (screen space)
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  let cap = null, capA = 0;
+  ST.forEach((s, i) => {
+    if (t < s.ta) return;
+    const next = ST[i + 1] ? ST[i + 1].ta : 99, active = t < next, capEnd = ST[i + 1] ? (ST[i + 1].cs || ST[i + 1].ta) : 99;
+    const sx = 960 + (s.p[0] - cx) * z, sy = 540 + (s.p[1] - cy) * z;
+    const k = clamp((t - s.ta) / 0.3), big = active && ov < 0.5 ? 1 : 0;
+    const size = big ? 84 : Math.max(34, 54 * z / 0.72);
+    const dy = s.side * (big ? 92 : size * 1.05);
+    ctx.save(); ctx.globalAlpha = k; ctx.font = `900 ${size}px ${SERIF}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.lineWidth = size * 0.16; ctx.strokeStyle = 'rgba(236,220,182,0.85)'; ctx.lineJoin = 'round';
+    ctx.strokeText(s.n, sx, sy + dy + (1 - k) * 14); ctx.fillStyle = '#2b1a0d'; ctx.fillText(s.n, sx, sy + dy + (1 - k) * 14);
+    ctx.restore();
+    if (t < capEnd && ov < 0.5) { cap = s.cap; capA = k * (1 - clamp((t - (capEnd - 0.12)) / 0.12)); }
+    if (i === 2 && t > 4.5 && ov < 0.5) seal(sx + 150, sy - 95, 96, '十余年', clamp((t - 4.5) / 0.12) * (1 - clamp((t - 5.6) / 0.3)));
+    if (i === 0 && active && ov < 0.5) seal(sx + 135, sy - 100, 86, '前139', clamp((t - 1.5) / 0.12));
+  });
+  ST.forEach(s => { if (s.cs && t >= s.cs && t < s.ta && ov < 0.5) { cap = s.cap; capA = clamp((t - s.cs) / 0.25); } });
+  if (cap) ribbon(cap, capA);
+  if (t > 10.55) { const a = clamp((t - 10.55) / 0.35); ribbon('前126年回到长安：去时百余人，归来只剩两人', a, 958, 46); seal(960 + 560, 958 - 6, 90, '前126', a); }
+
+  // fixed frame: title cartouche, compass, schematic note, footer, vignette
+  const vg = ctx.createRadialGradient(960, 540, 420, 960, 540, 1150); vg.addColorStop(0, 'rgba(40,20,5,0)'); vg.addColorStop(1, 'rgba(40,20,5,0.55)'); ctx.fillStyle = vg; ctx.fillRect(0, 0, 1920, 1080);
+  ctx.save(); const ta = clamp((t - 0.15) / 0.5);
+  ctx.globalAlpha = ta; ctx.fillStyle = 'rgba(236,220,182,0.92)'; ctx.strokeStyle = 'rgba(70,45,22,0.9)'; ctx.lineWidth = 3;
+  ctx.fillRect(60, 50, 430, 150); ctx.strokeRect(60, 50, 430, 150); ctx.lineWidth = 1.5; ctx.strokeRect(72, 62, 406, 126);
+  ctx.fillStyle = '#2b1a0d'; ctx.font = `900 62px ${SERIF}`; ctx.textBaseline = 'middle'; ctx.fillText('张骞出使西域', 92, 112);
+  ctx.font = `600 30px ${SERIF}`; ctx.fillStyle = '#5a3a1e'; ctx.fillText('前139年 — 前126年', 94, 166);
+  ctx.restore();
+  ctx.save(); ctx.translate(1800, 130); ctx.strokeStyle = 'rgba(60,35,15,0.8)'; ctx.fillStyle = 'rgba(60,35,15,0.8)'; ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.arc(0, 0, 54, 0, 6.283); ctx.stroke(); ctx.beginPath(); ctx.arc(0, 0, 46, 0, 6.283); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(0, -66); ctx.lineTo(12, 0); ctx.lineTo(0, 66); ctx.lineTo(-12, 0); ctx.closePath(); ctx.stroke(); ctx.beginPath(); ctx.moveTo(0, -66); ctx.lineTo(12, 0); ctx.lineTo(-12, 0); ctx.closePath(); ctx.fillStyle = VERM; ctx.fill();
+  ctx.fillStyle = '#2b1a0d'; ctx.font = `900 34px ${SERIF}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('北', 0, -92); ctx.restore();
+  ctx.save(); ctx.font = `600 28px ${SERIF}`; ctx.textAlign = 'center'; ctx.fillStyle = 'rgba(236,220,182,0.9)'; ctx.fillRect(1680, 1012, 200, 46); ctx.strokeStyle = 'rgba(70,45,22,0.8)'; ctx.lineWidth = 2; ctx.strokeRect(1680, 1012, 200, 46);
+  ctx.fillStyle = '#3a2412'; ctx.textBaseline = 'middle'; ctx.fillText('示意地图', 1780, 1036); ctx.restore();
+  ctx.font = `22px ${SANS}`; ctx.fillStyle = 'rgba(236,220,182,0.55)'; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic'; ctx.fillText('古地图动画 demo · 代码逐帧渲染', 40, 1056);
+  return { seg: 'oldmap', tau: t.toFixed(2) };
+};
+Promise.all([document.fonts.load(`900 84px "Noto Serif CJK SC"`), document.fonts.load(`600 44px "Noto Serif CJK SC"`), document.fonts.load(`22px "Noto Sans CJK SC"`)])
+  .then(() => document.fonts.ready).then(() => { buildTexture(); window.__render(0); window.__ready = true; });
+</script>
+</body>
+</html>

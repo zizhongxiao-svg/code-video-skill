@@ -1,0 +1,1 @@
+流程依据瓶到纤维（bottle-to-fiber）的再生 PET 工艺：回收→分拣（光学识别后用气流把目标件吹离传送带）→粉碎成瓶片→清洗→熔融（PET 熔点约 250–260°C，故写“250°C 以上”）→熔融纺丝（熔体经喷丝板细孔挤出、冷却、拉伸）→织造；涤纶即聚对苯二甲酸乙二醇酯（PET）纤维，见 Wikipedia “Polyethylene terephthalate”“Polyester”词条及 Textile Exchange 再生涤纶说明。
